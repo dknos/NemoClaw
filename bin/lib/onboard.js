@@ -2236,14 +2236,17 @@ async function startGatewayWithOptions(_gpu, { exitOnFailure = true } = {}) {
   // Clear stale SSH host keys from previous gateway (fixes #768)
   try {
     const { execFileSync } = require("child_process");
-    execFileSync("ssh-keygen", ["-R", `openshell-${SANDBOX_NAME}`], { stdio: "ignore" });
+    execFileSync("ssh-keygen", ["-R", `openshell-${GATEWAY_NAME}`], { stdio: "ignore" });
   } catch {}
   // Also purge any known_hosts entries matching the gateway hostname pattern
   const knownHostsPath = path.join(os.homedir(), ".ssh", "known_hosts");
   if (fs.existsSync(knownHostsPath)) {
     try {
       const kh = fs.readFileSync(knownHostsPath, "utf8");
-      const cleaned = kh.split("\n").filter(l => !l.includes("openshell-")).join("\n");
+      const cleaned = kh.split("\n").filter(l => {
+        const host = l.split(/\s/)[0] || "";
+        return !host.includes("openshell-");
+      }).join("\n");
       if (cleaned !== kh) fs.writeFileSync(knownHostsPath, cleaned);
     } catch {}
   }
