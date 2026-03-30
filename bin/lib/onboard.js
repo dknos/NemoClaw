@@ -2233,6 +2233,21 @@ async function startGatewayWithOptions(_gpu, { exitOnFailure = true } = {}) {
     console.log("  Stale gateway detected — attempting restart without destroy...");
   }
 
+  // Clear stale SSH host keys from previous gateway (fixes #768)
+  try {
+    const { execFileSync } = require("child_process");
+    execFileSync("ssh-keygen", ["-R", `openshell-${SANDBOX_NAME}`], { stdio: "ignore" });
+  } catch {}
+  // Also purge any known_hosts entries matching the gateway hostname pattern
+  const knownHostsPath = path.join(os.homedir(), ".ssh", "known_hosts");
+  if (fs.existsSync(knownHostsPath)) {
+    try {
+      const kh = fs.readFileSync(knownHostsPath, "utf8");
+      const cleaned = kh.split("\n").filter(l => !l.includes("openshell-")).join("\n");
+      if (cleaned !== kh) fs.writeFileSync(knownHostsPath, cleaned);
+    } catch {}
+  }
+
   const gwArgs = ["--name", GATEWAY_NAME];
   // Do NOT pass --gpu here. On DGX Spark (and most GPU hosts), inference is
   // routed through a host-side provider (Ollama, vLLM, or cloud API) — the
