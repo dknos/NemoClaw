@@ -2237,20 +2237,27 @@ async function startGatewayWithOptions(_gpu, { exitOnFailure = true } = {}) {
   try {
     const { execFileSync } = require("child_process");
     execFileSync("ssh-keygen", ["-R", `openshell-${GATEWAY_NAME}`], { stdio: "ignore" });
-  } catch {}
+  } catch {
+    /* ssh-keygen -R may fail if entry doesn't exist — safe to ignore */
+  }
   // Also purge any known_hosts entries matching the gateway hostname pattern
   const knownHostsPath = path.join(os.homedir(), ".ssh", "known_hosts");
   if (fs.existsSync(knownHostsPath)) {
     try {
       const kh = fs.readFileSync(knownHostsPath, "utf8");
-      const cleaned = kh.split("\n").filter(l => {
-        const trimmed = l.trim();
-        if (!trimmed || trimmed.startsWith("#")) return true;
-        const hostField = trimmed.split(/\s+/)[0];
-        return !hostField.split(",").some(h => h.startsWith("openshell-"));
-      }).join("\n");
+      const cleaned = kh
+        .split("\n")
+        .filter((l) => {
+          const trimmed = l.trim();
+          if (!trimmed || trimmed.startsWith("#")) return true;
+          const hostField = trimmed.split(/\s+/)[0];
+          return !hostField.split(",").some((h) => h.startsWith("openshell-"));
+        })
+        .join("\n");
       if (cleaned !== kh) fs.writeFileSync(knownHostsPath, cleaned);
-    } catch {}
+    } catch {
+      /* best-effort cleanup — ignore read/write errors */
+    }
   }
 
   const gwArgs = ["--name", GATEWAY_NAME];
