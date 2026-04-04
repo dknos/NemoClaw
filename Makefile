@@ -19,7 +19,10 @@ validate-agents:
 lint-ts:
 	cd nemoclaw && npm run check
 
-format: format-ts
+format: format-ts format-cli
+
+format-cli:
+	npx prettier --write 'bin/**/*.js' 'test/**/*.js'
 
 format-ts:
 	cd nemoclaw && npm run lint:fix && npm run format
