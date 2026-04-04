@@ -186,7 +186,7 @@ network_policies:
       - host: discord.com
         port: 443
         protocol: rest
-        enforcement: enforce
+        enforcement: passthrough
         tls: terminate
         rules:
           - allow: { method: GET, path: "/**" }
@@ -201,9 +201,12 @@ network_policies:
       - host: cdn.discordapp.com
         port: 443
         protocol: rest
-        enforcement: enforce
+        enforcement: passthrough
         tls: terminate
         rules:
           - allow: { method: GET, path: "/**" }
     binaries:
       - { path: /usr/local/bin/node }
+      - { path: /usr/local/bin/node* }
+      - { path: /usr/local/bin/openclaw }
+      - { path: /usr/local/bin/openclaw* }
