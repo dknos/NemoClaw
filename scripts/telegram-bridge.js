@@ -109,7 +109,9 @@ function runAgentInSandbox(message, sessionId) {
     // The remote command reads them from environment/stdin rather than
     // embedding user content in a shell string.
     const safeSessionId = String(sessionId).replace(/[^a-zA-Z0-9-]/g, "");
-    const cmd = `export NVIDIA_API_KEY=${shellQuote(API_KEY)} && nemoclaw-start openclaw agent --agent main --local -m ${shellQuote(message)} --session-id ${shellQuote("tg-" + safeSessionId)}`;
+    const msgSuffix = Date.now().toString(36).slice(-6);
+    const BRAVE_KEY = process.env.BRAVE_SEARCH_API_KEY || "";
+    const cmd = `export NVIDIA_API_KEY=${shellQuote(API_KEY)} BRAVE_API_KEY=${shellQuote(BRAVE_KEY)} BRAVE_SEARCH_API_KEY=${shellQuote(BRAVE_KEY)} BRAVE_ANSWERS_API_KEY=${shellQuote(BRAVE_KEY)} NODE_OPTIONS='--require /sandbox/dns-proxy-patch.js' && nemoclaw-start openclaw agent --agent main --local -m ${shellQuote(message)} --session-id ${shellQuote("tg-" + safeSessionId + "-" + msgSuffix)}`;
 
     const proc = spawn("ssh", ["-T", "-F", confPath, `openshell-${SANDBOX}`, cmd], {
       timeout: 120000,

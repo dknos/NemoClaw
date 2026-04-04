@@ -50,7 +50,7 @@ const GATEWAY_NAME = "nemoclaw";
 const BUILD_ENDPOINT_URL = "https://integrate.api.nvidia.com/v1";
 const OPENAI_ENDPOINT_URL = "https://api.openai.com/v1";
 const ANTHROPIC_ENDPOINT_URL = "https://api.anthropic.com";
-const GEMINI_ENDPOINT_URL = "https://generativelanguage.googleapis.com/v1beta/openai/";
+const GEMINI_ENDPOINT_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
 
 const REMOTE_PROVIDER_CONFIG = {
   build: {
@@ -669,13 +669,20 @@ function probeOpenAiLikeEndpoint(endpointUrl, model, apiKey) {
     const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-probe-"));
     const bodyFile = path.join(probeDir, "body.json");
     try {
+      // For Gemini, use x-goog-api-key header instead of Authorization: Bearer
+      const isGemini = endpointUrl.includes("generativelanguage.googleapis.com");
+      const authHeaders = apiKey
+        ? (isGemini
+          ? ['-H "x-goog-api-key: $NEMOCLAW_PROBE_API_KEY"']
+          : ['-H "Authorization: Bearer $NEMOCLAW_PROBE_API_KEY"'])
+        : [];
       const cmd = [
         "curl -sS",
         ...getCurlTimingArgs(),
         `-o ${shellQuote(bodyFile)}`,
         "-w '%{http_code}'",
         "-H 'Content-Type: application/json'",
-        ...(apiKey ? ['-H "Authorization: Bearer $NEMOCLAW_PROBE_API_KEY"'] : []),
+        ...authHeaders,
         `-d ${shellQuote(probe.body)}`,
         shellQuote(probe.url),
       ].join(" ");
@@ -1662,6 +1669,21 @@ async function startGatewayWithOptions(_gpu, { exitOnFailure = true } = {}) {
 
   if (hasStaleGateway(gwInfo)) {
     runOpenshell(["gateway", "destroy", "-g", GATEWAY_NAME], { ignoreError: true });
+  }
+
+  // Clear stale SSH host keys from previous gateway (fixes #768)
+  try {
+    const { execFileSync } = require("child_process");
+    execFileSync("ssh-keygen", ["-R", `openshell-${SANDBOX_NAME}`], { stdio: "ignore" });
+  } catch {}
+  // Also purge any known_hosts entries matching the gateway hostname pattern
+  const knownHostsPath = path.join(os.homedir(), ".ssh", "known_hosts");
+  if (fs.existsSync(knownHostsPath)) {
+    try {
+      const kh = fs.readFileSync(knownHostsPath, "utf8");
+      const cleaned = kh.split("\n").filter(l => !l.includes("openshell-")).join("\n");
+      if (cleaned !== kh) fs.writeFileSync(knownHostsPath, cleaned);
+    } catch {}
   }
 
   const gwArgs = ["--name", GATEWAY_NAME];
