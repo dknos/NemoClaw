@@ -30,6 +30,4 @@
 - Check cache: `grep "CACHE HIT\|tokens:" /tmp/discord-bridge.log | tail -10`
 
 ## Detailed Build Log
-C:\Users\rneeb\Desktop\MrBigPipes_AI_Complete_Build_Log.txt (private, full details)
-C:\Users\rneeb\Desktop\MrBigPipes_AI_Build_Log_PUBLIC.txt (sanitized, no private info)
-C:\Users\rneeb\Desktop\MrBigPipes_AI_README.txt (feature guide for anyone)
+See your local build logs directory.

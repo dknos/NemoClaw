@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-SRC="/mnt/c/Users/rneeb/Desktop/MrBigPipes_AI_Complete_Build_Log - Copy.txt"
+SRC="${BUILD_LOG_SRC:-}"
 OUT_DIR="/tmp/netify-build/out/docs"
 DEST="$OUT_DIR/build-log.txt"
 
