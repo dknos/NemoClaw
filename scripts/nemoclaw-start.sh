@@ -328,6 +328,30 @@ if [ -w "$_SANDBOX_HOME" ]; then
   _write_proxy_snippet "${_SANDBOX_HOME}/.profile"
 fi
 
+# ── Signal handling ─────────────────────────────────────────────
+# This script runs as PID 1 (ENTRYPOINT). Without signal forwarding,
+# SIGTERM from Docker/Kubernetes is not propagated to child processes,
+# leaving the gateway (and any auto-pair watcher) orphaned until the
+# container's kill timeout expires. Ref: #1427
+CHILD_PIDS=()
+
+cleanup() {
+  local sig="${1:-TERM}"
+  echo "[entrypoint] Received SIG${sig}, forwarding to child processes" >&2
+  for pid in "${CHILD_PIDS[@]}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "-${sig}" "$pid" 2>/dev/null || true
+    fi
+  done
+  # Wait for children to exit; ignore errors from already-exited processes
+  # shellcheck disable=SC2046
+  wait $(printf '%s ' "${CHILD_PIDS[@]}") 2>/dev/null || true
+  exit 0
+}
+
+trap 'cleanup TERM' TERM
+trap 'cleanup INT' INT
+
 # ── Main ─────────────────────────────────────────────────────────
 
 echo 'Setting up NemoClaw...' >&2
@@ -363,10 +387,15 @@ if [ "$(id -u)" -ne 0 ]; then
   # Start gateway in background, auto-pair, then wait
   nohup "$OPENCLAW" gateway run >/tmp/gateway.log 2>&1 &
   GATEWAY_PID=$!
+  CHILD_PIDS+=("$GATEWAY_PID")
   echo "[gateway] openclaw gateway launched (pid $GATEWAY_PID)" >&2
   start_auto_pair
   print_dashboard_urls
-  wait "$GATEWAY_PID"
+  # Wait in a loop: `wait` is interrupted by trapped signals, so re-wait
+  # until the gateway actually exits.
+  while kill -0 "$GATEWAY_PID" 2>/dev/null; do
+    wait "$GATEWAY_PID" || true
+  done
   exit $?
 fi
 
@@ -425,6 +454,7 @@ fi
 # the agent cannot restart the gateway with a tampered config.
 nohup gosu gateway "$OPENCLAW" gateway run >/tmp/gateway.log 2>&1 &
 GATEWAY_PID=$!
+CHILD_PIDS+=("$GATEWAY_PID")
 echo "[gateway] openclaw gateway launched as 'gateway' user (pid $GATEWAY_PID)" >&2
 
 start_auto_pair
@@ -432,4 +462,8 @@ print_dashboard_urls
 
 # Keep container running by waiting on the gateway process.
 # This script is PID 1 (ENTRYPOINT); if it exits, Docker kills all children.
-wait "$GATEWAY_PID"
+# Wait in a loop: `wait` is interrupted by trapped signals, so re-wait
+# until the gateway actually exits.
+while kill -0 "$GATEWAY_PID" 2>/dev/null; do
+  wait "$GATEWAY_PID" || true
+done
