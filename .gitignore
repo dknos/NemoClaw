@@ -9,6 +9,9 @@ dist/
 docs/_build/
 node_modules/
 
+# Next.js
+.next/
+
 # OS metadata
 .DS_Store
 desktop.ini

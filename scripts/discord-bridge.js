@@ -48,9 +48,29 @@ const _envFile = path.join(os.homedir(), ".nemoclaw_env");
 if (fs.existsSync(_envFile)) {
   for (const line of fs.readFileSync(_envFile, "utf8").split("\n")) {
     const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
-    if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
+    if (m && (!process.env[m[1]] || process.env[m[1]] === "")) process.env[m[1]] = m[2];
   }
 }
+// ── Retry helper for server.listen (survives EADDRINUSE during rapid restarts) ──
+function listenWithRetry(server, port, host, label, maxRetries = 5, delayMs = 2000) {
+  let attempt = 0;
+  function tryListen() {
+    server.listen(port, host, () => {
+      console.log(`[${label}] listening on :${port}`);
+    });
+  }
+  server.on("error", (e) => {
+    if (e.code === "EADDRINUSE" && attempt < maxRetries) {
+      attempt++;
+      console.warn(`[${label}] port ${port} in use, retry ${attempt}/${maxRetries} in ${delayMs}ms...`);
+      setTimeout(tryListen, delayMs);
+    } else {
+      console.warn(`[${label}] failed to start: ${e.message}`);
+    }
+  });
+  tryListen();
+}
+
 const { execFileSync, spawn } = require("child_process");
 const { resolveOpenshell } = require("../bin/lib/resolve-openshell");
 const { shellQuote, validateName } = require("../bin/lib/runner");
@@ -203,6 +223,29 @@ const lastGifTime = new Map(); // per-user GIF cooldown (prevent Discord API rat
 const generationContext = new Map(); // msgId → { prompt, ratio, imageBuf, videoBuf, type }
 const pendingMp4 = new Map();        // `${guildId}-${userId}` → { mp4Buf, ts } — awaiting audio upload to combine
 const pendingGrokImg2X = new Map();  // `${channelId}-${userId}` → { action: "img2img"|"img2vid", prompt, replyMsgId }
+
+// ── Edit queue — per-user media accumulator for /edit-add + /edit-go ──────
+const editQueues = new Map(); // userId → { images: Buffer[], videos: Buffer[], audios: Buffer[], updatedAt: number }
+const EDIT_QUEUE_EXPIRY = 30 * 60 * 1000; // 30 min
+
+function getEditQueue(userId) {
+  let q = editQueues.get(userId);
+  if (!q || Date.now() - q.updatedAt > EDIT_QUEUE_EXPIRY) {
+    q = { images: [], videos: [], audios: [], updatedAt: Date.now() };
+    editQueues.set(userId, q);
+  }
+  return q;
+}
+
+function clearEditQueue(userId) { editQueues.delete(userId); }
+
+function editQueueSummary(q) {
+  const parts = [];
+  if (q.images.length) parts.push(`${q.images.length} image${q.images.length > 1 ? "s" : ""}`);
+  if (q.videos.length) parts.push(`${q.videos.length} video${q.videos.length > 1 ? "s" : ""}`);
+  if (q.audios.length) parts.push(`${q.audios.length} audio`);
+  return parts.length ? parts.join(", ") : "empty";
+}
 
 // ── Agent queue — serialize agent calls per user to prevent sandbox session locks ──
 const agentQueue = new Map(); // userId → Promise chain
@@ -677,12 +720,7 @@ const GOOGLE_VERTEX_KEY = process.env.GOOGLE_VERTEX_KEY || "";
       gReq.end(body);
     });
   });
-  imagen3Server.listen(IMAGEN3_PORT, "0.0.0.0", () => {
-    console.log(`[imagen] Vertex AI proxy listening on :${IMAGEN3_PORT} (Cloud billing)`);
-  });
-  imagen3Server.on("error", e => {
-    console.warn(`[imagen] proxy failed to start: ${e.message}`);
-  });
+  listenWithRetry(imagen3Server, IMAGEN3_PORT, "0.0.0.0", "imagen");
 }
 
 // ── Gemini Vertex AI proxy (Cloud billing, OAuth2) ───────────────
@@ -1016,6 +1054,10 @@ async function getOrCreateContextCache(systemInstruction, geminiTools, toolConfi
               "- To convert a video to GIF: [MAKE_GIF] (4s from start), [MAKE_GIF:N] (4s from Ns), or [MAKE_GIF:start:duration]. Max 30s. Do NOT run ffmpeg yourself.\n" +
               "- You CAN make GIFs from videos. Never say you can't. Just output [MAKE_GIF] and the bridge does it.\n" +
               "- After you create a GIF, buttons appear automatically: '🔁 Perfect Loop' makes a seamless ping-pong loop, '📱 Post to IG' posts it as a Reel. Tell the user to click those buttons.\n" +
+              "- To generate music with ACE-Step (local, fast): [ACESTEP: tags=\"genre, mood, instruments\" lyrics=\"verse 1\\nchorus\\n...\" duration=60]\n" +
+              "- To generate music with Suno AI (cloud, high quality): [SUNO: prompt=\"song description\" tags=\"genre, mood\" lyrics=\"verse 1\\nchorus\\n...\" title=\"Song Title\"]\n" +
+              "- For Suno: if the user provides specific lyrics, use the lyrics= param. prompt= is for a general description when you want Suno to write lyrics. tags= sets genre/style. All params are optional except prompt= or lyrics=.\n" +
+              "- If the user asks for Suno specifically, use [SUNO:]. Otherwise default to [ACESTEP:] for music.\n" +
               "- The message tool is for sending text to other agents, NOT for Discord messages.\n";
             if (typeof systemInstruction === "string") {
               systemInstruction = systemInstruction + toolHint;
@@ -1163,10 +1205,7 @@ async function getOrCreateContextCache(systemInstruction, geminiTools, toolConfi
       }
     });
   });
-  geminiProxy.listen(GEMINI_PROXY_PORT, "0.0.0.0", () => {
-    console.log(`[gemini-proxy] Vertex AI express mode proxy on :${GEMINI_PROXY_PORT} (model: ${GEMINI_DEFAULT_MODEL})`);
-  });
-  geminiProxy.on("error", e => console.warn(`[gemini-proxy] failed: ${e.message}`));
+  listenWithRetry(geminiProxy, GEMINI_PROXY_PORT, "0.0.0.0", "gemini-proxy");
 }
 
 // ── Instagram Graph API direct posting (replaces Buffer.com) ─────
@@ -1656,7 +1695,7 @@ async function generateImageWithZTurbo(prompt, seed, style = "none") {
 }
 
 // ── CapCut API composition (primary) ─────────────────────────────────────────
-const CAPCUT_API_BASE = "http://172.20.224.1:9000";
+const CAPCUT_API_BASE = "http://localhost:30000/openapi/capcut-mate/v1";
 const CAPCUT_DRAFT_FOLDER = process.env.CAPCUT_DRAFT_FOLDER || "";
 const CAPCUT_EXPORT_FOLDER = process.env.CAPCUT_EXPORT_FOLDER || "";
 
@@ -1680,92 +1719,23 @@ async function capCutApiPost(endpoint, body) {
     body: JSON.stringify(body),
   });
   const json = await res.json();
-  if (!json.success) throw new Error(`CapCut API ${endpoint}: ${json.error}`);
-  return json.output;
+  if (json.code !== 0) throw new Error(`CapCut API ${endpoint}: ${json.message || "unknown error"}`);
+  return json;
 }
 
 async function composeVideoWithCapCutAPI({ videoPaths = [], style = "cinematic", textOverlay = null, musicPath = null }) {
-  // 1. Convert WSL paths to Windows paths for video files
-  const toWinPath = p => p.replace(/^\/mnt\/c\//, "C:\\").replace(/\//g, "\\");
-  const toWslPath = p => "/mnt/c/" + p.replace(/^C:\\/, "").replace(/\\/g, "/");
-
-  // Copy input videos to a Windows-accessible temp location
-  const { execSync } = require("child_process");
-  const ts = Date.now();
-  const winTmpDir = `${process.env.WIN_TEMP || "/tmp"}/candy-compose-${ts}`;
-  require("fs").mkdirSync(winTmpDir, { recursive: true });
-
-  const winVideoPaths = videoPaths.map((p, i) => {
-    const dest = `${winTmpDir}/clip${i}.mp4`;
-    require("fs").copyFileSync(p, dest);
-    return toWinPath(dest);
+  // CapCut API creates drafts but can't render without paid API key.
+  // Use the video-editor FFmpeg pipeline for actual rendering.
+  const { editVideo } = require("./lib/video-editor");
+  const videos = videoPaths.map(p => fs.readFileSync(p));
+  let audioBuffer = null;
+  if (musicPath) { try { audioBuffer = fs.readFileSync(musicPath); } catch {} }
+  const { videoBuffer } = await editVideo({
+    images: [], videos, audioBuffer,
+    preset: "short", style,
+    caption: textOverlay,
   });
-
-  // 2. Create draft
-  const { draft_id } = await capCutApiPost("/create_draft", { name: `candy-${ts}` });
-  console.log(`[capcut-api] draft created: ${draft_id}`);
-
-  // 3. Add video clips with transitions
-  const transition = CAPCUT_TRANSITIONS[style] || "Dissolve";
-  let targetStart = 0;
-  for (let i = 0; i < winVideoPaths.length; i++) {
-    const out = await capCutApiPost("/add_video", {
-      draft_id,
-      draft_folder: CAPCUT_DRAFT_FOLDER,
-      video_url: winVideoPaths[i],
-      width: 1080,
-      height: 1920,
-      target_start: targetStart,
-      transition: i > 0 ? transition : null,
-      transition_duration: 0.5,
-      volume: 1.0,
-    });
-    // Advance target start by clip duration
-    targetStart += (out.duration || 5) - 0.5; // overlap 0.5s for transition
-  }
-
-  // 4. Add music if provided
-  if (musicPath) {
-    const winMusicPath = toWinPath(musicPath.startsWith("/mnt/") ? musicPath : musicPath);
-    await capCutApiPost("/add_audio", {
-      draft_id,
-      draft_folder: CAPCUT_DRAFT_FOLDER,
-      audio_url: winMusicPath,
-      volume: 0.35,
-    }).catch(e => console.warn("[capcut-api] music add failed:", e.message));
-  }
-
-  // 5. Save/render draft
-  const saveOut = await capCutApiPost("/save_draft", {
-    draft_id,
-    draft_folder: CAPCUT_DRAFT_FOLDER,
-  });
-  const taskId = saveOut.task_id || saveOut.taskId;
-  console.log(`[capcut-api] render task: ${taskId}`);
-
-  // 6. Poll for completion
-  const deadline = Date.now() + 3 * 60 * 1000; // 3 min timeout
-  let outputPath = null;
-  while (Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, 3000));
-    const status = await capCutApiPost("/query_draft_status", { task_id: taskId });
-    console.log(`[capcut-api] render status: ${status.status} (${status.progress || 0}%)`);
-    if (status.status === "completed") {
-      outputPath = status.output_path || status.draft_url;
-      break;
-    }
-    if (status.status === "failed") throw new Error(`CapCut render failed: ${status.message}`);
-  }
-  if (!outputPath) throw new Error("CapCut render timed out after 3 minutes");
-
-  // 7. Read output file
-  const wslOutputPath = outputPath.startsWith("C:\\") ? toWslPath(outputPath) : outputPath;
-  const buf = require("fs").readFileSync(wslOutputPath);
-
-  // Cleanup tmp dir
-  try { execSync(`rm -rf "${winTmpDir}"`); } catch {}
-
-  return buf;
+  return videoBuffer;
 }
 
 // ── Candy's Video Composition Engine (FFmpeg fallback) ────────────────────────
@@ -1823,8 +1793,12 @@ async function composeVideoWithFFmpeg({ videoPaths = [], style = "cinematic", te
       composedPath = `${tmpDir}/composed.mp4`;
       const fadeDur = 0.5;
       const durations = normalizedPaths.map(p => {
-        try { return parseFloat(execSync(`"${FFPROBE_BIN}" -v error -show_entries format=duration -of csv=p=0 "${p}"`, { encoding: "utf-8", timeout: 10000 }).trim()); }
-        catch { return 6; }
+        try {
+          const out = execSync(`"${FFMPEG_BIN}" -i "${p}" 2>&1 || true`, { encoding: "utf-8", timeout: 10000 });
+          const dm = out.match(/Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/);
+          if (dm) return parseInt(dm[1]) * 3600 + parseInt(dm[2]) * 60 + parseInt(dm[3]) + parseInt(dm[4]) / 100;
+          return 6;
+        } catch { return 6; }
       });
       const inputs = normalizedPaths.map(p => `-i "${p}"`).join(" ");
       let filterComplex = "";
@@ -1867,18 +1841,20 @@ async function composeVideoWithFFmpeg({ videoPaths = [], style = "cinematic", te
   }
 }
 
-async function generateVideoWithComfyUI(prompt, imageBuffer = null) {
+async function generateVideoWithComfyUI(prompt, imageBuffer = null, durationSec = 10) {
   await freeComfyMemory();
   const seed = Math.floor(Math.random() * 2147483647);
+  const dur = Math.max(2, Math.min(30, durationSec || 10)); // clamp 2-30s
 
   if (imageBuffer) {
     // I2V mode — use the dedicated I2V workflow (combi 1.1)
     const workflow = JSON.parse(fs.readFileSync(COMFY_I2V_WORKFLOW, "utf-8"));
     workflow["121"].inputs.text = prompt; // CLIPTextEncode positive
     workflow["115"].inputs.noise_seed = seed;
+    if (workflow["196"]) { workflow["196"].inputs.Xi = dur; workflow["196"].inputs.Xf = dur; }
     const uploadedName = await uploadImageToComfyUI(imageBuffer);
     workflow["149"].inputs.image = uploadedName; // LoadImage node
-    console.log(`[video] I2V mode (combi 1.1), image: ${uploadedName}, seed: ${seed}`);
+    console.log(`[video] I2V mode (combi 1.1), image: ${uploadedName}, seed: ${seed}, duration: ${dur}s`);
     const promptId = await submitComfyWorkflow(workflow);
     console.log(`[video] submitted: ${promptId}`);
     const fileInfo = await waitForComfyResult(promptId, 900000);
@@ -1890,7 +1866,8 @@ async function generateVideoWithComfyUI(prompt, imageBuffer = null) {
     const workflow = JSON.parse(fs.readFileSync(COMFY_T2V_WORKFLOW, "utf-8"));
     workflow["121"].inputs.text = prompt; // CLIPTextEncode positive
     workflow["115"].inputs.noise_seed = seed;
-    console.log(`[video] T2V mode (dedicated workflow), seed: ${seed}`);
+    if (workflow["196"]) { workflow["196"].inputs.Xi = dur; workflow["196"].inputs.Xf = dur; }
+    console.log(`[video] T2V mode (dedicated workflow), seed: ${seed}, duration: ${dur}s`);
     const promptId = await submitComfyWorkflow(workflow);
     console.log(`[video] submitted: ${promptId}`);
     const fileInfo = await waitForComfyResult(promptId, 900000);
@@ -1909,26 +1886,16 @@ async function extractLastFrameFromVideo(videoBuf) {
   fs.writeFileSync(tmpIn, videoBuf);
   try {
     const { execSync } = require("child_process");
-    // Find ffmpeg — try WSL native first, then Windows paths
-    let ffmpeg = "ffmpeg";
-    let ffprobe = "ffprobe";
-    try { execSync("which ffmpeg", { encoding: "utf-8", timeout: 3000 }); }
-    catch {
-      const winPaths = [
-        "/home/nemoclaw/.local/bin/ffmpeg",
-        "/mnt/c/Program Files/Shotcut/ffmpeg.exe",
-        "/mnt/c/Program Files/SVP 4/utils/ffmpeg.exe",
-        "/mnt/c/Program Files/Krita (x64)/bin/ffmpeg.exe",
-      ];
-      for (const p of winPaths) {
-        try { execSync(`"${p}" -version`, { encoding: "utf-8", timeout: 5000 }); ffmpeg = p; break; } catch {}
-      }
-      ffprobe = ffmpeg.replace("ffmpeg", "ffprobe");
-    }
-    // Get duration, then extract the last frame
-    const duration = execSync(`"${ffprobe}" -v error -show_entries format=duration -of csv=p=0 "${tmpIn}"`, { encoding: "utf-8", timeout: 15000 }).trim();
+    // Get duration via ffmpeg -i (no separate ffprobe binary)
+    let duration = "5";
+    try {
+      const probeOut = execSync(`"${FFMPEG_BIN}" -i "${tmpIn}" 2>&1 || true`, { encoding: "utf-8", timeout: 15000 });
+      const dm = probeOut.match(/Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/);
+      if (dm) duration = String(parseInt(dm[1]) * 3600 + parseInt(dm[2]) * 60 + parseInt(dm[3]) + parseInt(dm[4]) / 100);
+    } catch (e) { console.warn(`[chain] duration probe failed: ${e.message}`); }
     const lastSec = Math.max(0, parseFloat(duration) - 0.1);
-    execSync(`"${ffmpeg}" -y -ss ${lastSec} -i "${tmpIn}" -frames:v 1 -q:v 2 "${tmpOut}"`, { timeout: 20000 });
+    console.log(`[chain] extracting last frame at ${lastSec}s from ${(videoBuf.length / 1024).toFixed(0)}KB video`);
+    execSync(`"${FFMPEG_BIN}" -y -ss ${lastSec} -i "${tmpIn}" -frames:v 1 -q:v 2 "${tmpOut}"`, { timeout: 20000, stdio: ["pipe", "pipe", "pipe"] });
     const frameBuf = fs.readFileSync(tmpOut);
     console.log(`[chain] extracted last frame (${frameBuf.length} bytes) at ${lastSec}s`);
     return frameBuf;
@@ -2108,15 +2075,18 @@ async function generateChainedVideo(segments, inputBuffers, msgReplyFn) {
 
 // ── ComfyUI First/Last Frame video generation (LTX 2.3 Combi) ────
 
-async function generateCombiVideoWithComfyUI(prompt, firstImageBuffer, lastImageBuffer) {
+async function generateCombiVideoWithComfyUI(prompt, firstImageBuffer, lastImageBuffer, durationSec = 10) {
   await freeComfyMemory();
   const workflow = JSON.parse(fs.readFileSync(COMFY_COMBI_WORKFLOW, "utf-8"));
   const seed = Math.floor(Math.random() * 2147483647);
+  const dur = Math.max(2, Math.min(30, durationSec || 10));
 
   // Set prompt
   workflow["121"].inputs.text = prompt;
   // Set seed
   workflow["115"].inputs.noise_seed = seed;
+  // Set duration
+  if (workflow["196"]) { workflow["196"].inputs.Xi = dur; workflow["196"].inputs.Xf = dur; }
 
   // Upload first frame image
   const firstName = await uploadImageToComfyUI(firstImageBuffer, "first_frame.jpg");
@@ -2562,7 +2532,7 @@ function runGrokImagine(prompt) {
 // ── Run agent inside sandbox ──────────────────────────────────────
 
 // Tokens that should never be shown in partial/streaming updates
-const _STREAM_STRIP_RE = /\[(?:BUFFER_POST|NETIFY_POST|SITE_EDIT|REMEMBER|GDRIVE_SAVE|ZTURBO|CAPCUT_COMPOSE|COMFYUI_VIDEO|COMFYUI_COMBI|MAKE_GIF|GIF:|YT_SEARCH|TRENDS:|CREW_PLAN|CLAUDE_QUERY)[^\]]{0,600}\]/gi;
+const _STREAM_STRIP_RE = /\[(?:BUFFER_POST|NETIFY_POST|SITE_EDIT|REMEMBER|GDRIVE_SAVE|ZTURBO|CAPCUT_COMPOSE|COMFYUI_VIDEO|COMFYUI_COMBI|MAKE_GIF|GIF:|YT_SEARCH|TRENDS:|CREW_PLAN|CLAUDE_QUERY|ACESTEP|SUNO)[^\]]{0,600}\]/gi;
 
 function runAgentInSandbox(message, sessionId, onProgress) {
   return new Promise((resolve) => {
@@ -2950,6 +2920,27 @@ client.on("interactionCreate", async (interaction) => {
             console.warn(`[btn-${action}] image recovery failed: ${e.message}`);
           }
         }
+      }
+
+      if ((action === "video" || action === "enhance") && !interaction.customId.includes("_dur_")) {
+        // Show duration modal instead of generating immediately
+        const mode = action === "enhance" ? "enhance" : "video";
+        const modal = new ModalBuilder()
+          .setCustomId(`modal_i2v_dur_${mode}_${msgId}`)
+          .setTitle(mode === "enhance" ? "✨ Enhance & Video" : "🎬 Make Video")
+          .addComponents(
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId("i2v_duration")
+                .setLabel("Duration in seconds (2-30, default 10)")
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder("10")
+                .setRequired(false)
+                .setMaxLength(2)
+            ),
+          );
+        await interaction.showModal(modal);
+        return;
       }
 
       if (action === "video" && (ctx.imageBuf || lastGeneratedImageBuffer)) {
@@ -3400,10 +3391,11 @@ client.on("interactionCreate", async (interaction) => {
           console.log(`[chain-btn] next: "${nextPrompt.slice(0, 60)}" | end: "${endFrameDesc.slice(0, 60)}"`);
 
           // Step 2: Extract last frame from current video
+          // Priority: ctx.videoBuf > Discord attachment > lastVideoBuffer (stale fallback)
           let firstFrame = null;
-          let vidBuf = ctx.videoBuf || lastVideoBuffer;
+          let vidBuf = ctx.videoBuf || null;
 
-          // Fallback: after restart context is gone — try to download video from Discord attachment
+          // Always try Discord attachment if no ctx (avoids stale lastVideoBuffer from hours ago)
           if (!vidBuf) {
             const msgAttachments = interaction.message?.attachments;
             const videoAtt = msgAttachments?.find(a => /\.(mp4|mov|webm)$/i.test(a.name || "") || (a.contentType || "").startsWith("video/"));
@@ -3413,15 +3405,20 @@ client.on("interactionCreate", async (interaction) => {
                 await interaction.editReply(`🔗 **Chain Next** — downloading video from Discord...`);
                 vidBuf = await fetch(videoAtt.url).then(r => r.arrayBuffer()).then(b => Buffer.from(b));
                 lastVideoBuffer = vidBuf;
-                // Register the original video as segment 1 so Stitch shows after chaining
                 if (!storySegments.has(rootId) || storySegments.get(rootId).length === 0) {
                   addSegment(rootId, vidBuf);
                 }
-                console.log(`[chain-btn] downloaded video (${vidBuf.length} bytes)`);
+                console.log(`[chain-btn] downloaded video from Discord (${vidBuf.length} bytes)`);
               } catch (e) {
                 console.warn(`[chain-btn] Discord video download failed: ${e.message}`);
               }
             }
+          }
+
+          // Last resort: stale global buffer
+          if (!vidBuf && lastVideoBuffer) {
+            console.log(`[chain-btn] using lastVideoBuffer fallback (${lastVideoBuffer.length} bytes)`);
+            vidBuf = lastVideoBuffer;
           }
 
           if (vidBuf) {
@@ -3570,13 +3567,28 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId("create_video_model")
               .setPlaceholder("Choose video model…")
               .addOptions([
-                { label: "Text-to-Video",       value: "video",   description: "Text → video clip (LTX 2.3, ~10s)",        emoji: "🎬" },
-                { label: "First/Last Frame",    value: "combi",   description: "Animate between two images",               emoji: "🎞️" },
-                { label: "Story Video",         value: "story",   description: "Multi-segment narrative video (20-40s)",   emoji: "📖" },
-                { label: "Grok img2vid",        value: "grok_img2vid", description: "Animate an image with Grok Aurora",  emoji: "🌀" },
+                { label: "Text-to-Video",       value: "video",        description: "Text → video clip (LTX 2.3, adjustable duration)", emoji: "🎬" },
+                { label: "Image-to-Video",      value: "i2v",          description: "Animate an image (LTX 2.3, adjustable duration)", emoji: "🖼️" },
+                { label: "First/Last Frame",    value: "combi",        description: "Animate between two images",                      emoji: "🎞️" },
+                { label: "Story Video",         value: "story",        description: "Multi-segment narrative video (20-40s)",           emoji: "📖" },
+                { label: "Grok img2vid",        value: "grok_img2vid", description: "Animate an image with Grok Aurora",               emoji: "🌀" },
               ])
           );
           await interaction.update({ content: "🎬 **Video** — pick a model:", components: [row] });
+        } else if (type === "edit") {
+          const row1 = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId("create_edit_preset")
+              .setPlaceholder("Choose video format…")
+              .addOptions([
+                { label: "Short (14s, 9:16)",          value: "short",         description: "YouTube Short / TikTok / Reel",        emoji: "📱" },
+                { label: "Vertical (60s, 9:16)",       value: "vertical",      description: "60s vertical video",                   emoji: "📱" },
+                { label: "Vertical Long (120s, 9:16)", value: "vertical-long", description: "2-min vertical video",                 emoji: "📱" },
+                { label: "Full (60s, 16:9)",           value: "full",          description: "Standard landscape video",              emoji: "🖥️" },
+                { label: "Long (120s, 16:9)",          value: "full-long",     description: "2-min landscape video",                 emoji: "🖥️" },
+              ])
+          );
+          await interaction.update({ content: "✂️ **Edit** — pick a format:", components: [row1] });
         } else if (type === "audio") {
           const row = new ActionRowBuilder().addComponents(
             new StringSelectMenuBuilder()
@@ -3588,6 +3600,124 @@ client.on("interactionCreate", async (interaction) => {
               ])
           );
           await interaction.update({ content: "🎵 **Audio** — pick a model:", components: [row] });
+        }
+        return;
+      }
+
+      // ── /create edit preset selected → show style picker ──────────
+      if (interaction.customId === "create_edit_preset") {
+        const preset = interaction.values[0];
+        const row = new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId(`create_edit_style:${preset}`)
+            .setPlaceholder("Choose a visual style…")
+            .addOptions([
+              { label: "Cinematic",  value: "cinematic",  emoji: "🎬" },
+              { label: "Vibrant",    value: "vibrant",    emoji: "🌈" },
+              { label: "Moody",      value: "moody",      emoji: "🌙" },
+              { label: "Vintage",    value: "vintage",    emoji: "📼" },
+              { label: "Dark",       value: "dark",       emoji: "🖤" },
+              { label: "Dreamy",     value: "dreamy",     emoji: "☁" },
+              { label: "Brainslop",  value: "brainslop",  emoji: "🧠", description: "Jumpcuts, beat-synced chaos" },
+              { label: "Ludicrous",  value: "ludicrous",  emoji: "🔥", description: "Pure rapid-fire brain slop" },
+            ])
+        );
+        await interaction.update({ content: `✂️ **Edit** *(${preset})* — pick a style:`, components: [row] });
+        return;
+      }
+
+      // ── /create edit style selected → show media summary + confirm ─
+      if (interaction.customId.startsWith("create_edit_style:")) {
+        const preset = interaction.customId.split(":")[1];
+        const style = interaction.values[0];
+
+        // Scan edit queue + recent generationContext for media
+        const images = [], videos = [], audios = [];
+        const q = editQueues.get(interaction.user.id);
+        if (q && Date.now() - q.updatedAt < EDIT_QUEUE_EXPIRY) {
+          images.push(...q.images); videos.push(...q.videos); audios.push(...q.audios);
+        }
+        const contextEntries = [...generationContext.entries()].reverse();
+        for (const [, ctx] of contextEntries) {
+          if (ctx.imageBuf && images.length < 10) images.push(ctx.imageBuf);
+          if (ctx.videoBuf && videos.length < 10) videos.push(ctx.videoBuf);
+          if (ctx.audioBuf && (ctx.type === "music" || ctx.type === "suno") && audios.length === 0) audios.push(ctx.audioBuf);
+        }
+        if (images.length === 0 && lastGeneratedImageBuffer) images.push(lastGeneratedImageBuffer);
+        if (videos.length === 0 && lastVideoBuffer) videos.push(lastVideoBuffer);
+
+        if (images.length === 0 && videos.length === 0) {
+          await interaction.update({
+            content: "❌ No media found.\n\nUse `/edit-add` to queue files, generate media (`/imagine`, `/video`, `/music`), or use `/edit` to attach directly.",
+            components: [],
+          });
+          return;
+        }
+
+        const mediaList = [
+          images.length && `${images.length} image${images.length > 1 ? "s" : ""}`,
+          videos.length && `${videos.length} video${videos.length > 1 ? "s" : ""}`,
+          audios.length && `1 audio track`,
+        ].filter(Boolean).join(", ");
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`create_edit_go:${preset}:${style}`).setLabel("Compose").setStyle(1).setEmoji("🎬"),
+          new ButtonBuilder().setCustomId("create_edit_cancel").setLabel("Cancel").setStyle(2),
+        );
+        await interaction.update({
+          content: `🎞 **Edit preview** — *${preset}, ${style}*\n\nFound: **${mediaList}**\n\nHit **Compose** to render, or use \`/edit\` to attach specific files.`,
+          components: [row],
+        });
+        return;
+      }
+
+      // ── /create edit cancel ───────────────────────────────────────
+      if (interaction.customId === "create_edit_cancel") {
+        await interaction.update({ content: "Cancelled.", components: [] });
+        return;
+      }
+
+      // ── /create edit confirmed → render ──────────���────────────────
+      if (interaction.customId.startsWith("create_edit_go:")) {
+        const [, preset, style] = interaction.customId.split(":");
+        await interaction.update({ content: `🎬 Composing **${preset}** video *(${style})*…`, components: [] });
+
+        const images = [], videos = [], audios = [];
+        // Pull from edit queue first
+        const q = editQueues.get(interaction.user.id);
+        if (q && Date.now() - q.updatedAt < EDIT_QUEUE_EXPIRY) {
+          images.push(...q.images); videos.push(...q.videos); audios.push(...q.audios);
+          clearEditQueue(interaction.user.id);
+        }
+        // Then from recent generations
+        const contextEntries = [...generationContext.entries()].reverse();
+        for (const [, ctx] of contextEntries) {
+          if (ctx.imageBuf && images.length < 10) images.push(ctx.imageBuf);
+          if (ctx.videoBuf && videos.length < 10) videos.push(ctx.videoBuf);
+          if (ctx.audioBuf && (ctx.type === "music" || ctx.type === "suno") && audios.length === 0) audios.push(ctx.audioBuf);
+        }
+        if (images.length === 0 && lastGeneratedImageBuffer) images.push(lastGeneratedImageBuffer);
+        if (videos.length === 0 && lastVideoBuffer) videos.push(lastVideoBuffer);
+
+        try {
+          const { editVideo } = require("./lib/video-editor");
+          const result = await editVideo({ images, videos, audioBuffer: audios[0] || null, preset, style });
+          const tmpOut = `/tmp/edit-out-${Date.now()}.mp4`;
+          fs.writeFileSync(tmpOut, result.videoBuffer);
+          const sizeMB = (result.videoBuffer.length / 1024 / 1024).toFixed(1);
+          const durStr = result.totalDurationSec.toFixed(1);
+          await interaction.editReply({
+            content: `🎬 **Edited** — ${durStr}s ${preset} *(${style}, ${sizeMB}MB)*`,
+            files: [new AttachmentBuilder(tmpOut, { name: `edit-${preset}.mp4` })],
+            components: videoButtons(interaction.id),
+          });
+          lastVideoBuffer = result.videoBuffer;
+          lastVideoMime = "video/mp4";
+          generationContext.set(interaction.id, { type: "video", videoBuf: result.videoBuffer, prompt: `${preset} ${style} edit` });
+          try { fs.unlinkSync(tmpOut); } catch {}
+        } catch (e) {
+          console.error("[edit/create] failed:", e);
+          await interaction.editReply(`❌ Edit failed: ${e.message.slice(0, 300)}`);
         }
         return;
       }
@@ -3643,6 +3773,42 @@ client.on("interactionCreate", async (interaction) => {
           });
           return;
         }
+        if (model === "i2v") {
+          const modal = new ModalBuilder()
+            .setCustomId("modal_create_vid_i2v")
+            .setTitle("🖼️ Image-to-Video (LTX 2.3)")
+            .addComponents(
+              new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                  .setCustomId("create_prompt")
+                  .setLabel("Describe the motion / scene")
+                  .setStyle(TextInputStyle.Paragraph)
+                  .setPlaceholder("e.g. camera slowly zooms in, hair blowing in the wind")
+                  .setRequired(true)
+                  .setMaxLength(500)
+              ),
+              new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                  .setCustomId("create_duration")
+                  .setLabel("Duration in seconds (2-30, default 10)")
+                  .setStyle(TextInputStyle.Short)
+                  .setPlaceholder("10")
+                  .setRequired(false)
+                  .setMaxLength(2)
+              ),
+              new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                  .setCustomId("create_image_url")
+                  .setLabel("Image URL (or leave blank to use last generated)")
+                  .setStyle(TextInputStyle.Short)
+                  .setPlaceholder("https://... or leave blank")
+                  .setRequired(false)
+                  .setMaxLength(500)
+              ),
+            );
+          await interaction.showModal(modal);
+          return;
+        }
         const labels = {
           video: ["🎬 Text-to-Video", "Describe the video scene",          "e.g. slow pan over a misty mountain lake at dawn"],
           story: ["📖 Story Video",   "Describe the full story arc",        "e.g. a knight discovers a dragon who just wants to bake"],
@@ -3651,15 +3817,26 @@ client.on("interactionCreate", async (interaction) => {
         const modal = new ModalBuilder()
           .setCustomId(`modal_create_vid_${model}`)
           .setTitle(title)
-          .addComponents(new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId("create_prompt")
-              .setLabel(label)
-              .setStyle(TextInputStyle.Paragraph)
-              .setPlaceholder(placeholder)
-              .setRequired(true)
-              .setMaxLength(500)
-          ));
+          .addComponents(
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId("create_prompt")
+                .setLabel(label)
+                .setStyle(TextInputStyle.Paragraph)
+                .setPlaceholder(placeholder)
+                .setRequired(true)
+                .setMaxLength(500)
+            ),
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId("create_duration")
+                .setLabel("Duration in seconds (2-30, default 10)")
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder("10")
+                .setRequired(false)
+                .setMaxLength(2)
+            ),
+          );
         await interaction.showModal(modal);
         return;
       }
@@ -3696,15 +3873,35 @@ client.on("interactionCreate", async (interaction) => {
           const modal = new ModalBuilder()
             .setCustomId("modal_create_aud_suno")
             .setTitle("🎶 Suno AI")
-            .addComponents(new ActionRowBuilder().addComponents(
-              new TextInputBuilder()
-                .setCustomId("create_prompt")
-                .setLabel("Describe the song (style, mood, genre, vibe)")
-                .setStyle(TextInputStyle.Paragraph)
-                .setPlaceholder("e.g. dreamy indie pop, melancholic, piano-driven, rainy night")
-                .setRequired(true)
-                .setMaxLength(300)
-            ));
+            .addComponents(
+              new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                  .setCustomId("create_prompt")
+                  .setLabel("Prompt (describe the song)")
+                  .setStyle(TextInputStyle.Short)
+                  .setPlaceholder("e.g. a love song about rainy nights in Tokyo")
+                  .setRequired(true)
+                  .setMaxLength(300)
+              ),
+              new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                  .setCustomId("create_style")
+                  .setLabel("Style / Tags (genre, mood, instruments)")
+                  .setStyle(TextInputStyle.Short)
+                  .setPlaceholder("e.g. dreamy indie pop, piano, female vocals, 90 BPM")
+                  .setRequired(false)
+                  .setMaxLength(200)
+              ),
+              new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                  .setCustomId("create_lyrics")
+                  .setLabel("Lyrics (leave blank for Suno to write)")
+                  .setStyle(TextInputStyle.Paragraph)
+                  .setPlaceholder("[Verse 1]\nYour lyrics here...\n\n[Chorus]\n...")
+                  .setRequired(false)
+                  .setMaxLength(1500)
+              ),
+            );
           await interaction.showModal(modal);
         }
         return;
@@ -3774,14 +3971,16 @@ client.on("interactionCreate", async (interaction) => {
       if (createVidMatch) {
         const model = createVidMatch[1];
         const prompt = interaction.fields.getTextInputValue("create_prompt").trim();
+        const durStr = (interaction.fields.getTextInputValue("create_duration") || "").trim();
+        const durationSec = durStr ? parseInt(durStr, 10) || 10 : 10;
         const _rlV = checkVideoRateLimit(interaction.user.id);
         if (!_rlV.allowed) { await interaction.reply({ content: `⏳ Video limit hit. Try again in **${_rlV.resetIn} min**.`, ephemeral: true }); return; }
         await interaction.deferReply();
         lastPrompt = prompt;
         if (model === "video") {
           const queue = await getComfyQueueStatus();
-          await interaction.editReply(`🎬 Rendering: *"${prompt.slice(0, 60)}"*... ${queue.total > 0 ? `(${queue.total} in queue)` : ""}`);
-          const videoBuf = await generateVideoWithComfyUI(prompt, null);
+          await interaction.editReply(`🎬 Rendering ${durationSec}s: *"${prompt.slice(0, 60)}"*... ${queue.total > 0 ? `(${queue.total} in queue)` : ""}`);
+          const videoBuf = await generateVideoWithComfyUI(prompt, null, durationSec);
           lastVideoBuffer = videoBuf; lastVideoMime = "video/mp4"; lastGeneratedImageBuffer = null;
           backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4");
           addSegment(interaction.id, videoBuf);
@@ -3789,6 +3988,27 @@ client.on("interactionCreate", async (interaction) => {
           const tmpVid = `/tmp/create-vid-${Date.now()}.mp4`;
           fs.writeFileSync(tmpVid, videoBuf);
           await interaction.editReply({ content: `🎬 *"${prompt.slice(0, 60)}"* — **LTX Video 2.3**`, files: [new AttachmentBuilder(tmpVid, { name: "video.mp4" })], components: videoButtons(interaction.id) });
+          fs.unlink(tmpVid, () => {});
+        } else if (model === "i2v") {
+          // Image-to-Video from /create
+          let imageBuf = lastGeneratedImageBuffer;
+          const imageUrl = (interaction.fields.getTextInputValue("create_image_url") || "").trim();
+          if (imageUrl) {
+            try { imageBuf = await fetch(imageUrl).then(r => r.arrayBuffer()).then(b => Buffer.from(b)); } catch (e) {
+              await interaction.editReply(`⚠️ Could not download image: ${e.message.slice(0, 100)}`); return;
+            }
+          }
+          if (!imageBuf) { await interaction.editReply("⚠️ No image available — generate an image first or provide a URL."); return; }
+          const queue = await getComfyQueueStatus();
+          await interaction.editReply(`🎬 I2V ${durationSec}s: *"${prompt.slice(0, 60)}"*... ${queue.total > 0 ? `(${queue.total} in queue)` : ""}`);
+          const videoBuf = await generateVideoWithComfyUI(prompt, imageBuf, durationSec);
+          lastVideoBuffer = videoBuf; lastVideoMime = "video/mp4";
+          backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4");
+          addSegment(interaction.id, videoBuf);
+          generationContext.set(interaction.id, { prompt, videoBuf, imageBuf, type: "video", rootId: interaction.id });
+          const tmpVid = `/tmp/create-i2v-${Date.now()}.mp4`;
+          fs.writeFileSync(tmpVid, videoBuf);
+          await interaction.editReply({ content: `🎬 I2V ${durationSec}s — **LTX Video 2.3**\n> *${prompt.slice(0, 100)}*`, files: [new AttachmentBuilder(tmpVid, { name: "video.mp4" })], components: videoButtons(interaction.id) });
           fs.unlink(tmpVid, () => {});
         } else if (model === "story") {
           const segments = 2;
@@ -3835,9 +4055,15 @@ client.on("interactionCreate", async (interaction) => {
       }
       if (interaction.customId === "modal_create_aud_suno") {
         const prompt = interaction.fields.getTextInputValue("create_prompt").trim();
+        const style  = (interaction.fields.getTextInputValue("create_style") || "").trim();
+        const lyrics = (interaction.fields.getTextInputValue("create_lyrics") || "").trim();
         await interaction.deferReply();
-        await interaction.editReply(`🎶 Generating with **Suno AI**: *"${prompt.slice(0, 80)}"*...`);
-        const tracks = await generateSuno(prompt, {});
+        const displayText = prompt.slice(0, 80) + (style ? ` [${style.slice(0, 40)}]` : "");
+        await interaction.editReply(`🎶 Generating with **Suno AI**: *"${displayText}"*...`);
+        const sunoOpts = {};
+        if (style)  sunoOpts.tags = style;
+        if (lyrics) sunoOpts.lyrics = lyrics;
+        const tracks = await generateSuno(prompt, sunoOpts);
         if (!tracks || tracks.length === 0) { await interaction.editReply("❌ Suno generation failed."); return; }
         for (const track of tracks) {
           const audioBuf = await downloadSunoAudio(track.audioUrl);
@@ -3845,6 +4071,79 @@ client.on("interactionCreate", async (interaction) => {
           fs.writeFileSync(tmpMp3, audioBuf);
           await interaction.followUp({ content: `🎶 *"${(track.title || prompt).slice(0, 80)}"* — **Suno AI**`, files: [new AttachmentBuilder(tmpMp3, { name: "suno.mp3" })] });
           fs.unlink(tmpMp3, () => {});
+        }
+        return;
+      }
+
+      // ── I2V / Enhance duration modal ───────────────────────────────────────
+      const i2vDurMatch = interaction.customId.match(/^modal_i2v_dur_(video|enhance)_(.+)$/);
+      if (i2vDurMatch) {
+        const mode = i2vDurMatch[1];
+        const origMsgId = i2vDurMatch[2];
+        const ctx = generationContext.get(origMsgId) || {};
+        const durStr = (interaction.fields.getTextInputValue("i2v_duration") || "").trim();
+        const durationSec = durStr ? parseInt(durStr, 10) || 10 : 10;
+
+        // Recover image from context or Discord attachment
+        let buf = ctx.imageBuf || lastGeneratedImageBuffer;
+        if (!buf) {
+          const imgAtt = interaction.message?.attachments?.find(a =>
+            /\.(png|jpg|jpeg|webp)$/i.test(a.name || "") || (a.contentType || "").startsWith("image/"));
+          if (imgAtt?.url) {
+            try { buf = await fetch(imgAtt.url).then(r => r.arrayBuffer()).then(b => Buffer.from(b)); } catch {}
+          }
+        }
+        if (!buf) { await interaction.reply({ content: "⚠️ Image not found — generate a new one.", ephemeral: true }); return; }
+
+        const _rlV = checkVideoRateLimit(interaction.user.id);
+        if (!_rlV.allowed) { await interaction.reply({ content: `⏳ Video limit hit. Try again in **${_rlV.resetIn} min**.`, ephemeral: true }); return; }
+
+        await interaction.deferReply();
+        const rootId = ctx.rootId || origMsgId;
+
+        if (mode === "enhance") {
+          const originalPrompt = ctx.prompt || lastPrompt || "cinematic scene";
+          try {
+            await interaction.editReply(`✨ Enhancing prompt for LTX Video (${durationSec}s)...`);
+            const enhanced = await enhanceVideoPrompt(originalPrompt);
+            console.log(`[enhance] "${originalPrompt.slice(0, 40)}" → "${enhanced.slice(0, 80)}" (${durationSec}s)`);
+            const queue = await getComfyQueueStatus();
+            await interaction.editReply(`✨ Enhanced:\n> *${enhanced.slice(0, 200)}*\n\n🎬 Rendering ${durationSec}s... ${queue.total > 0 ? `(${queue.total} in queue)` : ""}`);
+            const videoBuf = await generateVideoWithComfyUI(enhanced, buf, durationSec);
+            lastVideoBuffer = videoBuf; lastVideoMime = "video/mp4"; try { fs.writeFileSync("/tmp/last_generated_video.mp4", videoBuf); } catch {} backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4");
+            addSegment(rootId, videoBuf);
+            generationContext.set(interaction.message.id, { ...ctx, prompt: enhanced, videoBuf, type: "video", rootId });
+            const tmpVid = `/tmp/nemoclaw-enhance-vid-${Date.now()}.mp4`;
+            fs.writeFileSync(tmpVid, videoBuf);
+            await interaction.followUp({ content: `✨ Enhanced ${durationSec}s — **LTX Video 2.3**\n> *${enhanced.slice(0, 150)}*`, files: [new AttachmentBuilder(tmpVid, { name: "video.mp4" })], components: videoButtons(rootId) }).catch(() =>
+              interaction.editReply({ content: `✨ Enhanced ${durationSec}s — **LTX Video 2.3**`, files: [new AttachmentBuilder(tmpVid, { name: "video.mp4" })], components: videoButtons(rootId) })
+            );
+            fs.unlinkSync(tmpVid);
+          } catch (e) {
+            await interaction.followUp(`Enhance+Video failed: ${e.message.slice(0, 200)}`).catch(() =>
+              interaction.editReply(`Enhance+Video failed: ${e.message.slice(0, 200)}`)
+            );
+          }
+        } else {
+          // video mode
+          try {
+            const queue = await getComfyQueueStatus();
+            await interaction.editReply(`🎬 Making ${durationSec}s video from image... ${queue.total > 0 ? `(${queue.total} in queue)` : ""}`);
+            const videoBuf = await generateVideoWithComfyUI(ctx.prompt || "cinematic motion, smooth camera movement", buf, durationSec);
+            lastVideoBuffer = videoBuf; lastVideoMime = "video/mp4"; try { fs.writeFileSync("/tmp/last_generated_video.mp4", videoBuf); } catch {} backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4");
+            addSegment(rootId, videoBuf);
+            generationContext.set(interaction.message.id, { ...ctx, videoBuf, type: "video", rootId });
+            const tmpVid = `/tmp/nemoclaw-btn-vid-${Date.now()}.mp4`;
+            fs.writeFileSync(tmpVid, videoBuf);
+            await interaction.followUp({ content: `🎬 ${durationSec}s — **LTX Video 2.3**`, files: [new AttachmentBuilder(tmpVid, { name: "video.mp4" })], components: videoButtons(rootId) }).catch(() =>
+              interaction.editReply({ content: `🎬 ${durationSec}s — **LTX Video 2.3**`, files: [new AttachmentBuilder(tmpVid, { name: "video.mp4" })], components: videoButtons(rootId) })
+            );
+            fs.unlinkSync(tmpVid);
+          } catch (e) {
+            await interaction.followUp(`Video render failed: ${e.message.slice(0, 200)}`).catch(() =>
+              interaction.editReply(`Video render failed: ${e.message.slice(0, 200)}`)
+            );
+          }
         }
         return;
       }
@@ -4049,10 +4348,11 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           // Extract last frame
+          // Priority: ctx.videoBuf > Discord attachment > lastVideoBuffer (stale fallback)
           let firstFrame = null;
-          let vidBuf = ctx.videoBuf || lastVideoBuffer;
+          let vidBuf = ctx.videoBuf || null;
 
-          // Fallback: after restart context is gone — try to download from Discord
+          // Always try Discord attachment if no ctx (avoids stale lastVideoBuffer)
           if (!vidBuf) {
             const msgAttachments = interaction.message?.attachments;
             const videoAtt = msgAttachments?.find(a => /\.(mp4|mov|webm)$/i.test(a.name || "") || (a.contentType || "").startsWith("video/"));
@@ -4061,15 +4361,20 @@ client.on("interactionCreate", async (interaction) => {
                 console.log(`[chain-custom] downloading video from Discord: ${videoAtt.url}`);
                 vidBuf = await fetch(videoAtt.url).then(r => r.arrayBuffer()).then(b => Buffer.from(b));
                 lastVideoBuffer = vidBuf;
-                // Register the original video as segment 1 so Stitch shows after chaining
                 if (!storySegments.has(modalRootId) || storySegments.get(modalRootId).length === 0) {
                   addSegment(modalRootId, vidBuf);
                 }
-                console.log(`[chain-custom] downloaded video (${vidBuf.length} bytes)`);
+                console.log(`[chain-custom] downloaded video from Discord (${vidBuf.length} bytes)`);
               } catch (e) {
                 console.warn(`[chain-custom] Discord video download failed: ${e.message}`);
               }
             }
+          }
+
+          // Last resort: stale global buffer
+          if (!vidBuf && lastVideoBuffer) {
+            console.log(`[chain-custom] using lastVideoBuffer fallback (${lastVideoBuffer.length} bytes)`);
+            vidBuf = lastVideoBuffer;
           }
 
           if (vidBuf) {
@@ -4209,6 +4514,7 @@ client.on("interactionCreate", async (interaction) => {
       const prompt = interaction.options.getString("prompt");
       if (!att) { await interaction.reply({ content: "⚠️ Please attach an image.", ephemeral: true }); return; }
       await interaction.deferReply();
+      console.log(`[${cmd}] started: prompt="${prompt.slice(0, 60)}" attachment=${att.name} (${att.size} bytes)`);
       await interaction.editReply(`${isVid ? "🎬" : "🖼️"} Processing your image with Grok... (1-3 min)`);
       try {
         const imgBuf = Buffer.from(await fetch(att.url).then(r => r.arrayBuffer()));
@@ -4739,6 +5045,159 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    // /edit-add — add media to the per-user edit queue
+    if (cmd === "edit-add") {
+      const q = getEditQueue(interaction.user.id);
+      const slots = ["media1", "media2", "media3", "media4", "media5"];
+      let added = 0;
+      for (const slot of slots) {
+        const att = interaction.options.getAttachment(slot);
+        if (!att) continue;
+        try {
+          const buf = Buffer.from(await fetch(att.url).then(r => r.arrayBuffer()));
+          const mime = (att.contentType || "").toLowerCase();
+          if (mime.startsWith("audio/") || /\.(mp3|wav|ogg|flac|m4a|aac)$/i.test(att.name || "")) q.audios.push(buf);
+          else if (mime.startsWith("video/") || /\.(mp4|mov|webm|avi|mkv)$/i.test(att.name || "")) q.videos.push(buf);
+          else q.images.push(buf);
+          added++;
+        } catch (e) { console.error(`[edit-add] fetch failed: ${att.name}`, e.message); }
+      }
+      q.updatedAt = Date.now();
+      const total = q.images.length + q.videos.length + q.audios.length;
+      await interaction.reply({ content: `📥 Added **${added}** file${added !== 1 ? "s" : ""}. Queue: **${editQueueSummary(q)}** (${total} total)\n\nUse \`/edit-add\` for more, \`/edit-go\` to render, \`/edit-queue\` to preview.`, ephemeral: true });
+      return;
+    }
+
+    // /edit-queue — show queue contents
+    if (cmd === "edit-queue") {
+      const q = editQueues.get(interaction.user.id);
+      if (!q || (q.images.length === 0 && q.videos.length === 0 && q.audios.length === 0)) {
+        await interaction.reply({ content: "📭 Your edit queue is empty. Use `/edit-add` to add files.", ephemeral: true });
+        return;
+      }
+      const age = Math.round((Date.now() - q.updatedAt) / 60000);
+      const total = q.images.length + q.videos.length + q.audios.length;
+      const expireMin = Math.max(0, 30 - age);
+      await interaction.reply({ content: `📋 **Edit Queue** — ${editQueueSummary(q)} (${total} files)\nLast updated: ${age}m ago (expires in ${expireMin}m)\n\nUse \`/edit-go\` to render or \`/edit-clear\` to reset.`, ephemeral: true });
+      return;
+    }
+
+    // /edit-clear — clear the queue
+    if (cmd === "edit-clear") {
+      clearEditQueue(interaction.user.id);
+      await interaction.reply({ content: "🗑️ Edit queue cleared.", ephemeral: true });
+      return;
+    }
+
+    // /edit-go — render everything in the queue
+    if (cmd === "edit-go") {
+      const q = editQueues.get(interaction.user.id);
+      if (!q || (q.images.length === 0 && q.videos.length === 0 && q.audios.length === 0)) {
+        await interaction.reply({ content: "📭 Queue is empty. Use `/edit-add` to add files first.", ephemeral: true });
+        return;
+      }
+      const preset = interaction.options.getString("preset") || "short";
+      const style = interaction.options.getString("style") || "cinematic";
+      const caption = interaction.options.getString("caption") || null;
+      await interaction.deferReply();
+
+      const images = [...q.images];
+      const videos = [...q.videos];
+      const audios = [...q.audios];
+      clearEditQueue(interaction.user.id);
+
+      const mediaDesc = [images.length && `${images.length} img`, videos.length && `${videos.length} vid`, audios.length && `🎵`].filter(Boolean).join(" + ");
+      await interaction.editReply(`🎬 Composing **${preset}** video *(${style})* — ${mediaDesc}...`);
+
+      try {
+        const { editVideo } = require("./lib/video-editor");
+        const result = await editVideo({ images, videos, audioBuffer: audios[0] || null, preset, style, caption });
+        const tmpOut = `/tmp/edit-queue-${Date.now()}.mp4`;
+        fs.writeFileSync(tmpOut, result.videoBuffer);
+        const sizeMB = (result.videoBuffer.length / 1024 / 1024).toFixed(1);
+        const durStr = result.totalDurationSec.toFixed(1);
+        await interaction.editReply({
+          content: `🎬 **Edited** — ${durStr}s ${preset} *(${style}, ${sizeMB}MB)*`,
+          files: [new AttachmentBuilder(tmpOut, { name: `edit-${preset}.mp4` })],
+          components: videoButtons(interaction.id),
+        });
+        lastVideoBuffer = result.videoBuffer;
+        lastVideoMime = "video/mp4";
+        generationContext.set(interaction.id, { type: "video", videoBuf: result.videoBuffer, prompt: caption || `${preset} ${style} edit` });
+        try { fs.unlinkSync(tmpOut); } catch {}
+      } catch (e) {
+        console.error("[edit-go] failed:", e);
+        await interaction.editReply(`❌ Edit failed: ${e.message.slice(0, 300)}`);
+      }
+      return;
+    }
+
+    // /edit — compose video from images, clips, and music
+    if (cmd === "edit") {
+      await interaction.deferReply();
+      const preset  = interaction.options.getString("preset") || "short";
+      const style   = interaction.options.getString("style") || "cinematic";
+      const caption = interaction.options.getString("caption") || null;
+
+      // Collect media from attachments
+      const attachments = ["media1", "media2", "media3", "media4", "audio"]
+        .map(k => interaction.options.getAttachment(k)).filter(Boolean);
+
+      const images = [], videos = [], audios = [];
+      for (const att of attachments) {
+        const buf = await fetchBuffer(att.url);
+        const mime = (att.contentType || "").toLowerCase();
+        if (mime.startsWith("image/")) images.push(buf);
+        else if (mime.startsWith("video/")) videos.push(buf);
+        else if (mime.startsWith("audio/")) audios.push(buf);
+      }
+
+      // Fallback to previously generated media
+      if (images.length === 0 && lastGeneratedImageBuffer) images.push(lastGeneratedImageBuffer);
+      if (videos.length === 0 && lastVideoBuffer) videos.push(lastVideoBuffer);
+      if (audios.length === 0) {
+        for (const [, ctx] of generationContext) {
+          if (ctx.audioBuf && (ctx.type === "music" || ctx.type === "suno")) { audios.push(ctx.audioBuf); break; }
+        }
+      }
+
+      if (images.length === 0 && videos.length === 0) {
+        await interaction.editReply("❌ No media found. Attach files or generate images/videos first with `/imagine`, `/video`, `/music`.");
+        return;
+      }
+
+      const mediaDesc = [images.length && `${images.length} img`, videos.length && `${videos.length} vid`, audios.length && `🎵`].filter(Boolean).join(" + ");
+      await interaction.editReply(`🎬 Composing **${preset}** video *(${style})* — ${mediaDesc}...`);
+
+      try {
+        const { editVideo } = require("./lib/video-editor");
+        const result = await editVideo({
+          images, videos, audioBuffer: audios[0] || null,
+          preset, style, caption,
+        });
+
+        const tmpOut = `/tmp/edit-out-${Date.now()}.mp4`;
+        fs.writeFileSync(tmpOut, result.videoBuffer);
+        const sizeMB = (result.videoBuffer.length / 1024 / 1024).toFixed(1);
+        const durStr = result.totalDurationSec.toFixed(1);
+
+        await interaction.editReply({
+          content: `🎬 **Edited** — ${durStr}s ${preset} *(${style}, ${sizeMB}MB)*`,
+          files: [new AttachmentBuilder(tmpOut, { name: `edit-${preset}.mp4` })],
+          components: videoButtons(interaction.id),
+        });
+
+        lastVideoBuffer = result.videoBuffer;
+        lastVideoMime = "video/mp4";
+        generationContext.set(interaction.id, { type: "video", videoBuf: result.videoBuffer, prompt: caption || `${preset} ${style} edit` });
+        try { fs.unlinkSync(tmpOut); } catch {}
+      } catch (e) {
+        console.error("[edit] failed:", e);
+        await interaction.editReply(`❌ Edit failed: ${e.message.slice(0, 300)}`);
+      }
+      return;
+    }
+
     // /create — media type + model picker menu
     if (cmd === "create") {
       const row = new ActionRowBuilder().addComponents(
@@ -4749,6 +5208,7 @@ client.on("interactionCreate", async (interaction) => {
             { label: "Image",  value: "image",  description: "Generate a still image",   emoji: "🎨" },
             { label: "Video",  value: "video",  description: "Generate a video clip",     emoji: "🎬" },
             { label: "Audio",  value: "audio",  description: "Generate music or a song",  emoji: "🎵" },
+            { label: "Edit",   value: "edit",   description: "Compose a video from images, clips & music", emoji: "🎞" },
           ])
       );
       await interaction.reply({ content: "✨ **Create** — what type?", components: [row], ephemeral: true });
@@ -4896,6 +5356,83 @@ client.on("messageCreate", async (msg) => {
   );
   if (!entry) return;
   health.msgIn++;
+
+  // ── !edit message command — up to 10 attachments ────────────────────────────
+  if (msg.content && msg.content.toLowerCase().startsWith("!edit") && !isClaudeQuery) {
+    const args = msg.content.slice(5).trim().split(/\s+/);
+    const PRESET_NAMES = ["short", "short-long", "full", "full-long", "vertical", "vertical-long"];
+    const STYLE_NAMES = ["cinematic", "vibrant", "moody", "vintage", "dark", "dreamy", "bright", "clean", "brainslop", "ludicrous"];
+    let preset = "short", style = "cinematic", captionParts = [];
+    for (const arg of args) {
+      const lower = arg.toLowerCase();
+      if (PRESET_NAMES.includes(lower)) preset = lower;
+      else if (STYLE_NAMES.includes(lower)) style = lower;
+      else captionParts.push(arg);
+    }
+    const caption = captionParts.join(" ") || null;
+
+    const images = [], videos = [], audios = [];
+    for (const [, att] of msg.attachments) {
+      try {
+        const buf = Buffer.from(await fetch(att.url).then(r => r.arrayBuffer()));
+        const mime = (att.contentType || "").toLowerCase();
+        if (mime.startsWith("image/")) images.push(buf);
+        else if (mime.startsWith("video/")) videos.push(buf);
+        else if (mime.startsWith("audio/")) audios.push(buf);
+        else if (/\.(mp3|wav|ogg|flac|m4a|aac)$/i.test(att.name || "")) audios.push(buf);
+        else if (/\.(mp4|mov|webm|avi|mkv)$/i.test(att.name || "")) videos.push(buf);
+        else if (/\.(png|jpg|jpeg|gif|webp|avif)$/i.test(att.name || "")) images.push(buf);
+      } catch (e) { console.error(`[!edit] failed to fetch attachment ${att.name}:`, e.message); }
+    }
+
+    // Also pull from edit queue if user has one
+    const q = editQueues.get(msg.author.id);
+    if (q && Date.now() - q.updatedAt < EDIT_QUEUE_EXPIRY) {
+      images.push(...q.images);
+      videos.push(...q.videos);
+      audios.push(...q.audios);
+      clearEditQueue(msg.author.id);
+    }
+
+    // Fallback to recent generations
+    if (images.length === 0 && lastGeneratedImageBuffer) images.push(lastGeneratedImageBuffer);
+    if (videos.length === 0 && lastVideoBuffer) videos.push(lastVideoBuffer);
+    if (audios.length === 0) {
+      for (const [, ctx] of generationContext) {
+        if (ctx.audioBuf && (ctx.type === "music" || ctx.type === "suno")) { audios.push(ctx.audioBuf); break; }
+      }
+    }
+
+    if (images.length === 0 && videos.length === 0) {
+      await msg.reply("❌ No media found. Attach files or generate some first.");
+      return;
+    }
+
+    const mediaDesc = [images.length && `${images.length} img`, videos.length && `${videos.length} vid`, audios.length && `🎵`].filter(Boolean).join(" + ");
+    const progressMsg = await msg.reply(`🎬 Composing **${preset}** video *(${style})* — ${mediaDesc}...`);
+
+    try {
+      const { editVideo } = require("./lib/video-editor");
+      const result = await editVideo({ images, videos, audioBuffer: audios[0] || null, preset, style, caption });
+      const tmpOut = `/tmp/edit-msg-${Date.now()}.mp4`;
+      fs.writeFileSync(tmpOut, result.videoBuffer);
+      const sizeMB = (result.videoBuffer.length / 1024 / 1024).toFixed(1);
+      const durStr = result.totalDurationSec.toFixed(1);
+      await progressMsg.edit({
+        content: `🎬 **Edited** — ${durStr}s ${preset} *(${style}, ${sizeMB}MB)*`,
+        files: [new AttachmentBuilder(tmpOut, { name: `edit-${preset}.mp4` })],
+        components: videoButtons(progressMsg.id),
+      });
+      lastVideoBuffer = result.videoBuffer;
+      lastVideoMime = "video/mp4";
+      generationContext.set(progressMsg.id, { type: "video", videoBuf: result.videoBuffer, prompt: caption || `${preset} ${style} edit` });
+      try { fs.unlinkSync(tmpOut); } catch {}
+    } catch (e) {
+      console.error("[!edit] failed:", e);
+      await progressMsg.edit(`❌ Edit failed: ${e.message.slice(0, 300)}`);
+    }
+    return;
+  }
 
   // ── Grok img2img / img2vid pending attachment handler ────────────────────────
   const pendingKey = `${msg.channelId}-${msg.author.id}`;
@@ -6338,6 +6875,44 @@ Output ONLY the JSON object. No markdown, no explanation.`;
       mutableResponse = mutableResponse.replace(musicMatch[0], "").trim();
     }
 
+    // Check for Suno music generation token: [SUNO: prompt="..." tags="..." lyrics="..." title="..."]
+    const sunoMatch = mutableResponse.match(/\[SUNO:\s*([\s\S]*?)\]/i);
+    if (sunoMatch) {
+      const sunoArgs = sunoMatch[1];
+      const promptM = sunoArgs.match(/prompt\s*=\s*"([\s\S]*?)"/i);
+      const tagsM   = sunoArgs.match(/tags\s*=\s*"([\s\S]*?)"/i);
+      const lyricsM = sunoArgs.match(/lyrics\s*=\s*"([\s\S]*?)"/i);
+      const titleM  = sunoArgs.match(/title\s*=\s*"([\s\S]*?)"/i);
+      const prompt = promptM ? promptM[1].trim() : sunoArgs.trim().replace(/^prompt\s*=\s*/i, "").replace(/\s*(tags|lyrics|title)\s*=\s*"[\s\S]*?"/gi, "").trim();
+      const sunoOpts = {};
+      if (tagsM)   sunoOpts.tags   = tagsM[1].trim();
+      if (lyricsM) sunoOpts.lyrics = lyricsM[1].replace(/\\n/g, "\n").trim();
+      if (titleM)  sunoOpts.title  = titleM[1].trim();
+      const displayText = sunoOpts.title || prompt.slice(0, 80);
+      try {
+        await msg.reply(`🎶 Generating with **Suno AI**: *"${displayText}"*...`);
+        const { generateSuno } = require("./suno");
+        const tracks = await generateSuno(prompt, sunoOpts);
+        if (tracks && tracks.length > 0) {
+          for (const track of tracks.slice(0, 2)) {
+            if (track.audio_url) {
+              const { downloadAudio } = require("./suno");
+              const audioBuf = await downloadAudio(track.audio_url);
+              const tmpMp3 = `/tmp/nemoclaw-suno-${Date.now()}.mp3`;
+              fs.writeFileSync(tmpMp3, audioBuf);
+              const title = track.title || prompt.slice(0, 40);
+              await msg.reply({ content: `🎶 **${title}**`, files: [new AttachmentBuilder(tmpMp3, { name: "suno-song.mp3" })] });
+              fs.unlinkSync(tmpMp3);
+            }
+          }
+        }
+      } catch (e) {
+        console.error("[suno] failed:", e.message);
+        await msg.reply(`Suno generation failed: ${e.message.slice(0, 200)}`);
+      }
+      mutableResponse = mutableResponse.replace(sunoMatch[0], "").trim();
+    }
+
     // Check for Buffer social post token: [BUFFER_POST: channels="instagram,youtube" caption="..." media=/tmp/...]
     const bufferMatch = mutableResponse.match(/\[BUFFER_POST:\s*([\s\S]*?)\]/i);
     if (bufferMatch && msg.author.id === OWNER_ID_GLOBAL) {
@@ -6799,9 +7374,9 @@ const shouldGetCrewInput = bu.shouldGetCrewInput;
 // Pre-consult Candy and MaoMao before Pipes responds.
 // Returns a context string to prepend to Pipes' prompt.
 async function getCrewInput(userMessage) {
-  const CANDY_BRIEF = `You are Candy — Social Media Director. The crew is discussing what to do next. Give Pipes ONE sentence of input — your creative angle, aesthetic take, or what you think matters most here. Be specific. No preamble.`;
+  const CANDY_BRIEF = `You are Candy — Social Media Director and creative lead. The user just made a request and Pipes needs your input BEFORE responding. Give Pipes 1-2 sentences of actionable input: creative direction, aesthetic choices, lyric ideas, style suggestions, emotional hooks, or what angle would make this pop. If they want a song, suggest a mood/vibe/lyric hook. If they want an image, suggest a style/composition. Be specific and useful — Pipes will use your input to make the final call.`;
 
-  const MAOMAI_BRIEF = `You are MaoMao — logic and analysis. The crew is discussing what to do next. Give Pipes ONE sentence of input — what matters logically, what to watch out for, or what the smart move is. No preamble.`;
+  const MAOMAI_BRIEF = `You are MaoMao — logic, facts, and quality control. The user just made a request and Pipes needs your input BEFORE responding. Give Pipes 1-2 sentences: relevant facts, technical constraints, what could go wrong, or what the smart approach is. If they want a song, note genre conventions or lyric pitfalls. If they want content, flag anything that might not land well. Be specific — Pipes makes the final decision but your job is to catch what he'd miss.`;
 
   const [candyInput, maomaiInput] = await Promise.all([
     callCrewMember(CANDY_BRIEF, "Candy", CREW_CANDY_MODEL, 0.8, false, userMessage, ""),
@@ -6879,7 +7454,7 @@ checkComfyQueue().catch(() => {});
 
 // ── Health endpoint — expose internal state for diagnostics ─────
 const HEALTH_PORT = 9341;
-http.createServer((req, res) => {
+const healthServer = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/health") {
     const mem = process.memoryUsage();
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -6893,9 +7468,8 @@ http.createServer((req, res) => {
       discord: { connected: client.ws?.status === 0, ping: client.ws?.ping ?? -1 },
     }));
   } else { res.writeHead(404); res.end(); }
-}).listen(HEALTH_PORT, "127.0.0.1", () => {
-  console.log(`[health] endpoint on :${HEALTH_PORT}/health`);
-}).on("error", e => console.warn(`[health] failed to start: ${e.message}`));
+});
+listenWithRetry(healthServer, HEALTH_PORT, "127.0.0.1", "health");
 
 // ── Heartbeat — emit metrics to diag log every 5 min ────────────
 setInterval(() => {
