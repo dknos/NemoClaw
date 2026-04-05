@@ -5385,11 +5385,14 @@ client.on("messageCreate", async (msg) => {
     const args = msg.content.slice(5).trim().split(/\s+/);
     const PRESET_NAMES = ["short", "short-long", "full", "full-long", "vertical", "vertical-long"];
     const STYLE_NAMES = ["cinematic", "vibrant", "moody", "vintage", "dark", "dreamy", "bright", "clean", "brainslop", "ludicrous"];
-    let preset = "short", style = "cinematic", captionParts = [];
+    const LYRICS_STYLES = ["karaoke", "subtitles", "viral"];
+    let preset = "short", style = "cinematic", captionParts = [], lyrics = false, lyricsStyle = "karaoke";
     for (const arg of args) {
       const lower = arg.toLowerCase();
       if (PRESET_NAMES.includes(lower)) preset = lower;
       else if (STYLE_NAMES.includes(lower)) style = lower;
+      else if (lower === "lyrics" || lower === "lyric") lyrics = true;
+      else if (LYRICS_STYLES.includes(lower)) { lyrics = true; lyricsStyle = lower; }
       else captionParts.push(arg);
     }
     const caption = captionParts.join(" ") || null;
@@ -5436,7 +5439,7 @@ client.on("messageCreate", async (msg) => {
 
     try {
       const { editVideo } = require("./lib/video-editor");
-      const result = await editVideo({ images, videos, audioBuffer: audios[0] || null, preset, style, caption });
+      const result = await editVideo({ images, videos, audioBuffer: audios[0] || null, preset, style, caption, lyrics, lyricsStyle });
       const tmpOut = `/tmp/edit-msg-${Date.now()}.mp4`;
       fs.writeFileSync(tmpOut, result.videoBuffer);
       const sizeMB = (result.videoBuffer.length / 1024 / 1024).toFixed(1);

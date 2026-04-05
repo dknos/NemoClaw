@@ -293,7 +293,7 @@ function kenBurnsFilter(index, frames, w, h) {
 
 // ── FFmpeg render pipeline ──────────────────────────────────────────────────
 
-async function renderTimeline(plan, { style = "cinematic", caption = null, audioPath = null, tmpDir }) {
+async function renderTimeline(plan, { style = "cinematic", caption = null, audioPath = null, tmpDir, lyricsAssPath = null }) {
   const { segments, totalDurationSec, transitionDurSec } = plan;
   const preset = plan.preset || PRESETS.short;
   const { w, h, fps, videoBitrateK } = preset;
@@ -372,14 +372,22 @@ Dialogue: 0,0:00:00.00,0:00:04.00,Default,,0,0,0,,${safeText}
     console.log("[video-editor] caption overlay added (ASS)");
   }
 
-  // Stage 4: Audio mix
+  // Stage 4: Lyrics overlay (if transcribed)
+  let withLyricsPath = withTextPath;
+  if (lyricsAssPath && fs.existsSync(lyricsAssPath)) {
+    withLyricsPath = `${tmpDir}/with_lyrics.mp4`;
+    ffmpegExec(`-y -i "${withTextPath}" -vf "ass=${lyricsAssPath}" -c:v libx264 ${finalEncode} -an "${withLyricsPath}"`, "lyrics-overlay");
+    console.log("[video-editor] lyrics overlay burned");
+  }
+
+  // Stage 5: Audio mix
   let finalPath;
   if (audioPath) {
     finalPath = `${tmpDir}/final.mp4`;
-    ffmpegExec(`-y -i "${withTextPath}" -stream_loop -1 -i "${audioPath}" -map 0:v:0 -map 1:a:0 -shortest -c:v copy -c:a aac -b:a 192k "${finalPath}"`, "audio-mix");
+    ffmpegExec(`-y -i "${withLyricsPath}" -stream_loop -1 -i "${audioPath}" -map 0:v:0 -map 1:a:0 -shortest -c:v copy -c:a aac -b:a 192k "${finalPath}"`, "audio-mix");
     console.log("[video-editor] audio mixed");
   } else {
-    finalPath = withTextPath;
+    finalPath = withLyricsPath;
   }
 
   // Size guard: re-encode if over 24MB (Discord bot limit)
@@ -497,7 +505,7 @@ function computeChoppyTimeline({ imagePaths, videoPaths, targetSec, style, beats
 }
 
 // Render a choppy timeline: normalize each slice then hard-cut concat (no xfade)
-async function renderChoppyTimeline(plan, { style, caption, audioPath, tmpDir }) {
+async function renderChoppyTimeline(plan, { style, caption, audioPath, tmpDir, lyricsAssPath = null }) {
   const preset = plan.preset || PRESETS.short;
   const { w, h, fps, videoBitrateK } = preset;
   const colorFilter = STYLE_FILTERS[style] || STYLE_FILTERS.cinematic;
@@ -561,14 +569,22 @@ async function renderChoppyTimeline(plan, { style, caption, audioPath, tmpDir })
     ffmpegExec(`-y -i "${composedPath}" -vf "ass=${assPath}" -c:v libx264 ${finalEncode} -an "${withTextPath}"`, "choppy-caption");
   }
 
-  // Stage 4: Audio
+  // Stage 4: Lyrics overlay
+  let withLyricsPath = withTextPath;
+  if (lyricsAssPath && fs.existsSync(lyricsAssPath)) {
+    withLyricsPath = `${tmpDir}/with_lyrics.mp4`;
+    ffmpegExec(`-y -i "${withTextPath}" -vf "ass=${lyricsAssPath}" -c:v libx264 ${finalEncode} -an "${withLyricsPath}"`, "choppy-lyrics");
+    console.log("[video-editor] lyrics overlay burned");
+  }
+
+  // Stage 5: Audio
   let finalPath;
   if (audioPath) {
     finalPath = `${tmpDir}/final.mp4`;
-    ffmpegExec(`-y -i "${withTextPath}" -stream_loop -1 -i "${audioPath}" -map 0:v:0 -map 1:a:0 -shortest -c:v copy -c:a aac -b:a 192k "${finalPath}"`, "choppy-audio");
+    ffmpegExec(`-y -i "${withLyricsPath}" -stream_loop -1 -i "${audioPath}" -map 0:v:0 -map 1:a:0 -shortest -c:v copy -c:a aac -b:a 192k "${finalPath}"`, "choppy-audio");
     console.log("[video-editor] audio mixed");
   } else {
-    finalPath = withTextPath;
+    finalPath = withLyricsPath;
   }
 
   // Size guard
@@ -589,7 +605,7 @@ async function renderChoppyTimeline(plan, { style, caption, audioPath, tmpDir })
 
 // ── Main export ─────────────────────────────────────────────────────────────
 
-async function editVideo({ images = [], videos = [], audioBuffer = null, preset = "short", style = "cinematic", caption = null }) {
+async function editVideo({ images = [], videos = [], audioBuffer = null, preset = "short", style = "cinematic", caption = null, lyrics = false, lyricsStyle = "karaoke" }) {
   const presetCfg = PRESETS[preset] || PRESETS.short;
   const ts = Date.now();
   const tmpDir = `/tmp/nemoclaw-edit-${ts}`;
@@ -633,9 +649,26 @@ async function editVideo({ images = [], videos = [], audioBuffer = null, preset 
     plan.preset = presetCfg;
     console.log(`[video-editor] timeline: ${plan.segments.length} segments, ${plan.totalDurationSec.toFixed(1)}s target=${presetCfg.targetSec}s${plan.choppy ? " (choppy)" : ""}`);
 
+    // Lyrics transcription — generates ASS subtitle file for karaoke/viral captions
+    let lyricsAssPath = null;
+    let transcript = null;
+    if (lyrics && audioPath) {
+      try {
+        const { transcribeAudio, generateLyricCaptions } = require("./lyrics-captions");
+        transcript = await transcribeAudio(audioPath);
+        lyricsAssPath = generateLyricCaptions(transcript, {
+          width: presetCfg.w, height: presetCfg.h, style: lyricsStyle,
+          outputPath: `${tmpDir}/lyrics.ass`,
+        });
+        console.log(`[video-editor] lyrics: ${transcript.words.length} words, style=${lyricsStyle}`);
+      } catch (e) {
+        console.warn("[video-editor] lyrics transcription failed:", e.message);
+      }
+    }
+
     const videoBuffer = plan.choppy
-      ? await renderChoppyTimeline(plan, { style, caption, audioPath, tmpDir })
-      : await renderTimeline(plan, { style, caption, audioPath, tmpDir });
+      ? await renderChoppyTimeline(plan, { style, caption, audioPath, tmpDir, lyricsAssPath })
+      : await renderTimeline(plan, { style, caption, audioPath, tmpDir, lyricsAssPath });
     const sizeMB = (videoBuffer.length / 1024 / 1024).toFixed(1);
     console.log(`[video-editor] render complete: ${sizeMB}MB`);
 
