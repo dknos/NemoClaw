@@ -5314,24 +5314,28 @@ Output ONLY the JSON object. No markdown, no explanation.`;
 
   console.log(`[${msg.author.username}] ${fullMessage.slice(0, 120)}`);
 
+  let progressMsg = null; // hoisted out of try for catch-block access
   try {
-    let progressMsg = null;
     let typingStopped = false;
     let agentDone = false; // guard: stop progress edits once agent resolves
     let progressBusy = false; // guard: prevent concurrent progress edits
+    let progressInflight = null; // track in-flight progress promise to prevent double-post race
     const onProgress = async (text) => {
       if (agentDone || progressBusy) return;
       progressBusy = true;
-      try {
-        if (!typingStopped) { clearInterval(typingInterval); typingStopped = true; }
-        const preview = text.slice(-1800);
-        if (!progressMsg) {
-          progressMsg = await msg.reply(`⏳ ${preview}`);
-        } else {
-          await progressMsg.edit(`⏳ ${preview}`);
-        }
-      } catch (e) { console.warn("[stream] progress edit failed:", e.message); }
-      finally { progressBusy = false; }
+      progressInflight = (async () => {
+        try {
+          if (!typingStopped) { clearInterval(typingInterval); typingStopped = true; }
+          const preview = text.slice(-1800);
+          if (!progressMsg) {
+            progressMsg = await msg.reply(`⏳ ${preview}`);
+          } else {
+            await progressMsg.edit(`⏳ ${preview}`);
+          }
+        } catch (e) { console.warn("[stream] progress edit failed:", e.message); }
+        finally { progressBusy = false; }
+      })();
+      await progressInflight;
     };
     _mt.mark("agent_start");
     let response = await enqueueAgent(msg.author.id, () =>
@@ -5339,6 +5343,7 @@ Output ONLY the JSON object. No markdown, no explanation.`;
     );
     _mt.mark("agent_done");
     agentDone = true; // stop any in-flight progress callbacks
+    if (progressInflight) await progressInflight.catch(() => {}); // wait for in-flight progress msg to land
     if (!typingStopped) clearInterval(typingInterval);
     // Strip raw Discord user IDs from public responses (18-digit numeric strings)
     response = response.replace(/\b\d{17,19}\b/g, "[user]");
@@ -5362,6 +5367,8 @@ Output ONLY the JSON object. No markdown, no explanation.`;
     if (hallucinationHit || structuralHit) {
       const reason = hallucinationHit ? String(hallucinationHit) : `structural (${boldNumberedItems} bold items + dramatic closer)`;
       console.warn(`[hallucination] blocked response: ${reason}`);
+      // Clean up progress msg before replying to prevent double-post
+      if (progressMsg) { try { await progressMsg.delete(); } catch {} progressMsg = null; }
       // If we have real trend data, send it directly instead of error message
       if (trendData) {
         const top = trendData.topPosts.slice(0, 3);
@@ -6280,6 +6287,7 @@ Output ONLY the JSON object. No markdown, no explanation.`;
     }
   } catch (err) {
     clearInterval(typingInterval);
+    if (progressMsg) { try { await progressMsg.delete(); } catch {} progressMsg = null; }
     _mt.finish("error");
     diag("error", { id: msg.id, err: err.message });
     await msg.reply(`Error: ${err.message}`);
