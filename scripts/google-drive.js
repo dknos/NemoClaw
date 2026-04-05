@@ -136,7 +136,7 @@ function httpsRequest(options, body) {
 
 /**
  * Upload a file to Google Drive using the service account.
- * The target folder must be shared with: nemodisc@drivenemo.iam.gserviceaccount.com
+ * The target folder must be shared with the configured service account email.
  */
 async function uploadToDrive(filePath, mimeType, fileName, folderId) {
   folderId     = folderId || GDRIVE_FOLDER_ID;
@@ -243,7 +243,7 @@ function getSetupInstructions() {
 
 Share your Drive folder with this email so the bot can upload to it:
 \`\`\`
-nemodisc@drivenemo.iam.gserviceaccount.com
+<your-service-account-email>
 \`\`\`
 Then set the folder ID in \`~/.nemoclaw_env\`:
 \`\`\`

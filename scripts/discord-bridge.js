@@ -1587,7 +1587,7 @@ async function downloadComfyFile(fileInfo) {
 
 // ── ZImage Turbo (local ComfyUI image gen) ───────────────────────────────────
 
-const ZTURBO_WORKFLOW_PATH = "/mnt/c/Users/rneeb/Downloads/amazing-z-image-b_SAFETENSORS2.json";
+const ZTURBO_WORKFLOW_PATH = process.env.ZTURBO_WORKFLOW_PATH || "";
 
 const ZTURBO_STYLES = {
   "none":              null,
@@ -1652,8 +1652,8 @@ async function generateImageWithZTurbo(prompt, seed, style = "none") {
 
 // ── CapCut API composition (primary) ─────────────────────────────────────────
 const CAPCUT_API_BASE = "http://172.20.224.1:9000";
-const CAPCUT_DRAFT_FOLDER = "C:\\Users\\rneeb\\Documents\\CapCut\\User Data\\Projects\\com.lveditor.draft";
-const CAPCUT_EXPORT_FOLDER = "/mnt/c/Users/rneeb/Documents/CapCut/User Data/Projects/com.lveditor.draft";
+const CAPCUT_DRAFT_FOLDER = process.env.CAPCUT_DRAFT_FOLDER || "";
+const CAPCUT_EXPORT_FOLDER = process.env.CAPCUT_EXPORT_FOLDER || "";
 
 const CAPCUT_TRANSITIONS = {
   cinematic: "Dissolve",
@@ -1687,7 +1687,7 @@ async function composeVideoWithCapCutAPI({ videoPaths = [], style = "cinematic",
   // Copy input videos to a Windows-accessible temp location
   const { execSync } = require("child_process");
   const ts = Date.now();
-  const winTmpDir = `/mnt/c/Users/rneeb/AppData/Local/Temp/candy-compose-${ts}`;
+  const winTmpDir = `${process.env.WIN_TEMP || "/tmp"}/candy-compose-${ts}`;
   require("fs").mkdirSync(winTmpDir, { recursive: true });
 
   const winVideoPaths = videoPaths.map((p, i) => {
