@@ -30,6 +30,19 @@ const fs    = require("fs");
 const path  = require("path");
 const os    = require("os");
 
+// ── Telemetry counters (lightweight JSON file, no perf impact) ───────────────
+const TELEMETRY_COUNTERS_PATH = path.join(os.homedir(), ".nemoclaw/telemetry-counters.json");
+function bumpCounter(key, amount = 1) {
+  try {
+    let counters = {};
+    if (fs.existsSync(TELEMETRY_COUNTERS_PATH)) {
+      counters = JSON.parse(fs.readFileSync(TELEMETRY_COUNTERS_PATH, "utf8"));
+    }
+    counters[key] = (counters[key] || 0) + amount;
+    fs.writeFileSync(TELEMETRY_COUNTERS_PATH, JSON.stringify(counters));
+  } catch (_) { /* non-critical */ }
+}
+
 // Load .nemoclaw_env if present (pm2 doesn't source shell profiles)
 const _envFile = path.join(os.homedir(), ".nemoclaw_env");
 if (fs.existsSync(_envFile)) {
@@ -1638,6 +1651,7 @@ async function generateImageWithZTurbo(prompt, seed, style = "none") {
   console.log(`[zturbo] submitted: ${promptId}`);
   const fileInfo = await waitForComfyImage(promptId, 120000);
   console.log(`[zturbo] done: ${fileInfo.filename}`);
+  bumpCounter("images");
   return await downloadComfyFile(fileInfo);
 }
 
@@ -1869,6 +1883,7 @@ async function generateVideoWithComfyUI(prompt, imageBuffer = null) {
     console.log(`[video] submitted: ${promptId}`);
     const fileInfo = await waitForComfyResult(promptId, 900000);
     console.log(`[video] done: ${fileInfo.filename}`);
+    bumpCounter("videos");
     return await downloadComfyFile(fileInfo);
   } else {
     // T2V mode — use the new dedicated T2V workflow
@@ -1880,6 +1895,7 @@ async function generateVideoWithComfyUI(prompt, imageBuffer = null) {
     console.log(`[video] submitted: ${promptId}`);
     const fileInfo = await waitForComfyResult(promptId, 900000);
     console.log(`[video] done: ${fileInfo.filename}`);
+    bumpCounter("videos");
     return await downloadComfyFile(fileInfo);
   }
 }
@@ -2116,6 +2132,7 @@ async function generateCombiVideoWithComfyUI(prompt, firstImageBuffer, lastImage
   console.log(`[combi-video] submitted: ${promptId}`);
   const fileInfo = await waitForComfyResult(promptId, 720000); // 12 min
   console.log(`[combi-video] done: ${fileInfo.filename}`);
+  bumpCounter("videos");
   return await downloadComfyFile(fileInfo);
 }
 
@@ -3529,8 +3546,309 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    // ── Select menu interactions ──────────────────────────────────
+    if (interaction.isStringSelectMenu()) {
+      // ── /create top-level type menu ──────────────────────────────
+      if (interaction.customId === "create_type") {
+        const type = interaction.values[0];
+        if (type === "image") {
+          const row = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId("create_image_model")
+              .setPlaceholder("Choose image model…")
+              .addOptions([
+                { label: "Grok txt2img",  value: "grok_txt2img",  description: "Text → image via Grok Aurora (xAI)",          emoji: "✨" },
+                { label: "Grok img2img",  value: "grok_img2img",  description: "Image + prompt → variation via Grok Aurora",  emoji: "🖼️" },
+                { label: "ZImage Turbo",  value: "zturbo",        description: "Fast local GPU image (ComfyUI)",              emoji: "⚡" },
+                { label: "Imagine",       value: "imagine",       description: "Text → image via Imagen 4 Fast",              emoji: "🎨" },
+              ])
+          );
+          await interaction.update({ content: "🎨 **Image** — pick a model:", components: [row] });
+        } else if (type === "video") {
+          const row = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId("create_video_model")
+              .setPlaceholder("Choose video model…")
+              .addOptions([
+                { label: "Text-to-Video",       value: "video",   description: "Text → video clip (LTX 2.3, ~10s)",        emoji: "🎬" },
+                { label: "First/Last Frame",    value: "combi",   description: "Animate between two images",               emoji: "🎞️" },
+                { label: "Story Video",         value: "story",   description: "Multi-segment narrative video (20-40s)",   emoji: "📖" },
+                { label: "Grok img2vid",        value: "grok_img2vid", description: "Animate an image with Grok Aurora",  emoji: "🌀" },
+              ])
+          );
+          await interaction.update({ content: "🎬 **Video** — pick a model:", components: [row] });
+        } else if (type === "audio") {
+          const row = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId("create_audio_model")
+              .setPlaceholder("Choose audio model…")
+              .addOptions([
+                { label: "ACE-Step Music",  value: "music",  description: "Generate a song with tags + lyrics",  emoji: "🎵" },
+                { label: "Suno AI",         value: "suno",   description: "Generate a song with Suno AI",        emoji: "🎶" },
+              ])
+          );
+          await interaction.update({ content: "🎵 **Audio** — pick a model:", components: [row] });
+        }
+        return;
+      }
+
+      // ── /create image model selected → show prompt modal ─────────
+      if (interaction.customId === "create_image_model") {
+        const model = interaction.values[0];
+        if (model === "grok_img2img" || model === "grok_img2vid") {
+          // img2img/img2vid needs an attachment — redirect to dedicated slash command
+          const isVid = model === "grok_img2vid";
+          await interaction.update({
+            content: `📎 Use **/${isVid ? "grok-img2vid" : "grok-img2img"}** to upload your source image along with a prompt.`,
+            components: [],
+          });
+          return;
+        }
+        const labels = {
+          grok_txt2img: ["✨ Grok txt2img", "Describe the image you want", "e.g. a lone astronaut on a neon-lit alien market"],
+          zturbo:       ["⚡ ZImage Turbo", "Describe the image you want", "e.g. a cyberpunk city at night, oil painting"],
+          imagine:      ["🎨 Imagine",      "Describe the image you want", "e.g. golden hour portrait of a wolf in the forest"],
+        };
+        const [title, label, placeholder] = labels[model] || ["Generate", "Prompt", ""];
+        const modal = new ModalBuilder()
+          .setCustomId(`modal_create_img_${model}`)
+          .setTitle(title)
+          .addComponents(new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("create_prompt")
+              .setLabel(label)
+              .setStyle(TextInputStyle.Paragraph)
+              .setPlaceholder(placeholder)
+              .setRequired(true)
+              .setMaxLength(500)
+          ));
+        await interaction.showModal(modal);
+        return;
+      }
+
+      // ── /create video model selected → show prompt modal ─────────
+      if (interaction.customId === "create_video_model") {
+        const model = interaction.values[0];
+        if (model === "combi") {
+          await interaction.update({
+            content: "📎 Use **/combi** and attach 2 images (first + last frame) along with your prompt.",
+            components: [],
+          });
+          return;
+        }
+        if (model === "grok_img2vid") {
+          await interaction.update({
+            content: "📎 Use **/grok-img2vid** to upload your source image along with a prompt.",
+            components: [],
+          });
+          return;
+        }
+        const labels = {
+          video: ["🎬 Text-to-Video", "Describe the video scene",          "e.g. slow pan over a misty mountain lake at dawn"],
+          story: ["📖 Story Video",   "Describe the full story arc",        "e.g. a knight discovers a dragon who just wants to bake"],
+        };
+        const [title, label, placeholder] = labels[model] || ["Generate", "Prompt", ""];
+        const modal = new ModalBuilder()
+          .setCustomId(`modal_create_vid_${model}`)
+          .setTitle(title)
+          .addComponents(new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("create_prompt")
+              .setLabel(label)
+              .setStyle(TextInputStyle.Paragraph)
+              .setPlaceholder(placeholder)
+              .setRequired(true)
+              .setMaxLength(500)
+          ));
+        await interaction.showModal(modal);
+        return;
+      }
+
+      // ── /create audio model selected → show prompt modal ─────────
+      if (interaction.customId === "create_audio_model") {
+        const model = interaction.values[0];
+        if (model === "music") {
+          const modal = new ModalBuilder()
+            .setCustomId("modal_create_aud_music")
+            .setTitle("🎵 ACE-Step Music")
+            .addComponents(
+              new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                  .setCustomId("create_tags")
+                  .setLabel("Style tags (genre, tempo, instruments, vocals)")
+                  .setStyle(TextInputStyle.Short)
+                  .setPlaceholder("e.g. lo-fi hip hop, chill, piano, rain, female vocal")
+                  .setRequired(true)
+                  .setMaxLength(200)
+              ),
+              new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                  .setCustomId("create_lyrics")
+                  .setLabel("Lyrics (use [verse] [chorus] markers)")
+                  .setStyle(TextInputStyle.Paragraph)
+                  .setPlaceholder("[verse]\nWalking through the city lights...\n[chorus]\nWe are alive tonight...")
+                  .setRequired(true)
+                  .setMaxLength(1500)
+              )
+            );
+          await interaction.showModal(modal);
+        } else if (model === "suno") {
+          const modal = new ModalBuilder()
+            .setCustomId("modal_create_aud_suno")
+            .setTitle("🎶 Suno AI")
+            .addComponents(new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId("create_prompt")
+                .setLabel("Describe the song (style, mood, genre, vibe)")
+                .setStyle(TextInputStyle.Paragraph)
+                .setPlaceholder("e.g. dreamy indie pop, melancholic, piano-driven, rainy night")
+                .setRequired(true)
+                .setMaxLength(300)
+            ));
+          await interaction.showModal(modal);
+        }
+        return;
+      }
+
+      return;
+    }
+
     // ── Modal submit interactions (chain with custom prompt) ──────
     if (interaction.isModalSubmit()) {
+      // ── /create image modals ──────────────────────────────────────────────
+      const createImgMatch = interaction.customId.match(/^modal_create_img_(\w+)$/);
+      if (createImgMatch) {
+        const model = createImgMatch[1];
+        const prompt = interaction.fields.getTextInputValue("create_prompt").trim();
+        await interaction.deferReply();
+        lastPrompt = prompt;
+        if (model === "grok_txt2img") {
+          const localPaths = await runGrokImagine(prompt);
+          if (!localPaths || localPaths.length === 0) { await interaction.editReply("⚠️ Grok generation failed."); return; }
+          const imageBufs = localPaths.map(p => fs.readFileSync(p));
+          lastGeneratedImageBuffer = imageBufs[0];
+          backupMedia(imageBufs[0], `grok-${Date.now()}.png`, "image/png");
+          const replyMsg = await interaction.editReply({
+            content: `✨ *"${prompt.slice(0, 80)}"* — **Grok Aurora** — pick an image:`,
+            files: localPaths.map(p => new AttachmentBuilder(p)),
+            components: grokGridButtons(interaction.id, localPaths.length),
+          });
+          generationContext.set(interaction.id, { prompt, type: "grok", imageBufs, imageBuf: imageBufs[0] });
+          localPaths.forEach(p => fs.unlink(p, () => {}));
+        } else if (model === "zturbo") {
+          const imgBuf = await generateImageWithZTurbo(prompt, undefined, "none");
+          const tmpPath = `/tmp/create-zturbo-${Date.now()}.png`;
+          fs.writeFileSync(tmpPath, imgBuf);
+          lastGeneratedImageBuffer = imgBuf;
+          backupMedia(imgBuf, `zturbo-${Date.now()}.png`, "image/png");
+          const replyMsg = await interaction.editReply({
+            content: `⚡ *"${prompt.slice(0, 80)}"* — **ZImage Turbo**`,
+            files: [new AttachmentBuilder(tmpPath, { name: "zturbo.png" })],
+            components: [imageButtons(interaction.id)],
+          });
+          generationContext.set(interaction.id, { prompt, type: "image", imageBuf: imgBuf });
+          fs.unlink(tmpPath, () => {});
+        } else if (model === "imagine") {
+          const uniqueToken = `[gen-${Date.now().toString(36)}]`;
+          const agentMsg = `generate image: ${prompt} 1:1 ${uniqueToken}`;
+          const response = await runAgentInSandbox(agentMsg, `dc-${interaction.user.id}-${Date.now().toString(36)}`);
+          let imagePaths = extractImagePaths(response).filter(p => { try { return (Date.now() - fs.statSync(p).mtimeMs) < 30000; } catch { return false; } });
+          if (imagePaths.length > 0) {
+            const localPath = await pullImageFromSandbox(imagePaths[0]);
+            if (localPath) {
+              lastGeneratedImageBuffer = fs.readFileSync(localPath);
+              const modelName = extractModelName(response);
+              const replyMsg = await interaction.editReply({ content: `🎨 *"${prompt.slice(0, 80)}"* — **${modelName}**`, files: [new AttachmentBuilder(localPath)], components: [imageButtons(interaction.id)] });
+              generationContext.set(interaction.id, { prompt, imageBuf: lastGeneratedImageBuffer, type: "image" });
+              fs.unlinkSync(localPath);
+              return;
+            }
+          }
+          await interaction.editReply(`❌ Imagine generation failed.`);
+        }
+        return;
+      }
+
+      // ── /create video modals ──────────────────────────────────────────────
+      const createVidMatch = interaction.customId.match(/^modal_create_vid_(\w+)$/);
+      if (createVidMatch) {
+        const model = createVidMatch[1];
+        const prompt = interaction.fields.getTextInputValue("create_prompt").trim();
+        const _rlV = checkVideoRateLimit(interaction.user.id);
+        if (!_rlV.allowed) { await interaction.reply({ content: `⏳ Video limit hit. Try again in **${_rlV.resetIn} min**.`, ephemeral: true }); return; }
+        await interaction.deferReply();
+        lastPrompt = prompt;
+        if (model === "video") {
+          const queue = await getComfyQueueStatus();
+          await interaction.editReply(`🎬 Rendering: *"${prompt.slice(0, 60)}"*... ${queue.total > 0 ? `(${queue.total} in queue)` : ""}`);
+          const videoBuf = await generateVideoWithComfyUI(prompt, null);
+          lastVideoBuffer = videoBuf; lastVideoMime = "video/mp4"; lastGeneratedImageBuffer = null;
+          backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4");
+          addSegment(interaction.id, videoBuf);
+          generationContext.set(interaction.id, { prompt, videoBuf, type: "video", rootId: interaction.id });
+          const tmpVid = `/tmp/create-vid-${Date.now()}.mp4`;
+          fs.writeFileSync(tmpVid, videoBuf);
+          await interaction.editReply({ content: `🎬 *"${prompt.slice(0, 60)}"* — **LTX Video 2.3**`, files: [new AttachmentBuilder(tmpVid, { name: "video.mp4" })], components: videoButtons(interaction.id) });
+          fs.unlink(tmpVid, () => {});
+        } else if (model === "story") {
+          const segments = 2;
+          await interaction.editReply(`📖 Planning story: *"${prompt.slice(0, 60)}"*...`);
+          const agentMsg = `Break this story into ${segments} segments of 10 seconds each for video generation. Output ONLY the [COMFYUI_STORY:] token with segment prompts. Story: ${prompt}`;
+          const response = await runAgentInSandbox(agentMsg, `dc-${interaction.user.id}-${Date.now().toString(36)}`);
+          const storyMatch = response.match(/\[COMFYUI_STORY:\s*([\s\S]*?)\]/i);
+          const segRegex = /segment_\d+\s*=\s*"([\s\S]*?)"/gi;
+          const segs = [];
+          let sm;
+          if (storyMatch) while ((sm = segRegex.exec(storyMatch[1])) !== null) segs.push(sm[1].trim());
+          if (segs.length < 2) { await interaction.editReply("⚠️ Could not parse story segments."); return; }
+          await interaction.editReply(`📖 Rendering ${segs.length} segments...`);
+          const results = await generateChainedVideo(segs, [], async (text) => { await interaction.followUp(text).catch(() => {}); });
+          for (const { videoBuf, index } of results) {
+            const tmpVid = `/tmp/create-story-${Date.now()}-${index}.mp4`;
+            fs.writeFileSync(tmpVid, videoBuf);
+            await interaction.followUp({ content: `**Segment ${index + 1}/${results.length}**`, files: [new AttachmentBuilder(tmpVid, { name: `segment-${index + 1}.mp4` })] });
+            fs.unlink(tmpVid, () => {});
+          }
+          if (results.length > 0) {
+            for (const { videoBuf } of results) addSegment(interaction.id, videoBuf);
+            lastVideoBuffer = results[results.length - 1].videoBuf;
+            await interaction.followUp({ content: `✅ **Story complete!** Click **Stitch All** to combine.`, components: videoButtons(interaction.id) });
+          }
+        }
+        return;
+      }
+
+      // ── /create audio modals ──────────────────────────────────────────────
+      if (interaction.customId === "modal_create_aud_music") {
+        const tags   = interaction.fields.getTextInputValue("create_tags").trim();
+        const lyrics = interaction.fields.getTextInputValue("create_lyrics").trim();
+        await interaction.deferReply();
+        const queue = await getComfyQueueStatus();
+        await interaction.editReply(`🎵 Composing: *"${tags.slice(0, 60)}"*... ${queue.total > 0 ? `(${queue.total} in queue)` : ""}`);
+        const audioBuf = await generateMusicWithAceStep(tags, lyrics.replace(/\\n/g, "\n"), 60);
+        const tmpMp3 = `/tmp/create-music-${Date.now()}.mp3`;
+        fs.writeFileSync(tmpMp3, audioBuf);
+        await interaction.editReply({ content: `🎵 *"${tags.slice(0, 60)}"* — **ACE-Step**`, files: [new AttachmentBuilder(tmpMp3, { name: "song.mp3" })], components: [musicButtons(interaction.id)] });
+        generationContext.set(interaction.id, { prompt: tags, audioBuf, type: "music" });
+        fs.unlink(tmpMp3, () => {});
+        return;
+      }
+      if (interaction.customId === "modal_create_aud_suno") {
+        const prompt = interaction.fields.getTextInputValue("create_prompt").trim();
+        await interaction.deferReply();
+        await interaction.editReply(`🎶 Generating with **Suno AI**: *"${prompt.slice(0, 80)}"*...`);
+        const tracks = await generateSuno(prompt, {});
+        if (!tracks || tracks.length === 0) { await interaction.editReply("❌ Suno generation failed."); return; }
+        for (const track of tracks) {
+          const audioBuf = await downloadSunoAudio(track.audioUrl);
+          const tmpMp3 = `/tmp/create-suno-${Date.now()}.mp3`;
+          fs.writeFileSync(tmpMp3, audioBuf);
+          await interaction.followUp({ content: `🎶 *"${(track.title || prompt).slice(0, 80)}"* — **Suno AI**`, files: [new AttachmentBuilder(tmpMp3, { name: "suno.mp3" })] });
+          fs.unlink(tmpMp3, () => {});
+        }
+        return;
+      }
+
       // ── GIF clip modal (start time + duration) ────────────────────────────
       const gifClipMatch = interaction.customId.match(/^modal_gifclip_(.+)$/);
       if (gifClipMatch) {
@@ -4418,6 +4736,22 @@ client.on("interactionCreate", async (interaction) => {
         if (i === 0) await interaction.editReply(clean.slice(i, i + 1900));
         else await interaction.followUp(clean.slice(i, i + 1900));
       }
+      return;
+    }
+
+    // /create — media type + model picker menu
+    if (cmd === "create") {
+      const row = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId("create_type")
+          .setPlaceholder("What do you want to create?")
+          .addOptions([
+            { label: "Image",  value: "image",  description: "Generate a still image",   emoji: "🎨" },
+            { label: "Video",  value: "video",  description: "Generate a video clip",     emoji: "🎬" },
+            { label: "Audio",  value: "audio",  description: "Generate music or a song",  emoji: "🎵" },
+          ])
+      );
+      await interaction.reply({ content: "✨ **Create** — what type?", components: [row], ephemeral: true });
       return;
     }
 

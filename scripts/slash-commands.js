@@ -167,6 +167,10 @@ const commands = [
     .setDescription("Replace a video's audio track with an uploaded audio file")
     .addAttachmentOption(o => o.setName("video").setDescription("Video file (mp4, mov, webm...)").setRequired(true))
     .addAttachmentOption(o => o.setName("audio").setDescription("Audio file to use as soundtrack (mp3, wav, ogg...)").setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName("create")
+    .setDescription("Create image, video, or audio — pick a type and model"),
 ];
 
 async function registerCommands(token, clientId) {
