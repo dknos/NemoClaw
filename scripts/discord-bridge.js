@@ -566,25 +566,16 @@ if (!OPENSHELL) {
 const TOKEN      = process.env.DISCORD_BOT_TOKEN;
 const API_KEY    = process.env.NVIDIA_API_KEY;
 const SANDBOX    = process.env.SANDBOX_NAME    || "my-assistant";
-const BLOCKED_USERS = new Set(["1376192463126925382"]);
+const BLOCKED_USERS = new Set((process.env.DISCORD_BLOCKED_USERS || "").split(",").filter(Boolean));
 // Supports multiple guild:channel pairs, comma-separated
-// e.g. DISCORD_CHANNELS="guildA:chanA,guildB:chanB"
-// Falls back to legacy DISCORD_GUILD_ID / DISCORD_CHANNEL_ID env vars
-const ALLOWED_CHANNELS = process.env.DISCORD_CHANNELS
-  ? process.env.DISCORD_CHANNELS.split(",").map((s) => {
-      const parts = s.trim().split(":");
-      const entry = { guildId: parts[0], channelId: parts[1] };
-      if (parts[2] === "mention") entry.mentionOnly = true;
-      return entry;
-    })
-  : [
-      { guildId: process.env.DISCORD_GUILD_ID   || "915789984282325012",
-        channelId: process.env.DISCORD_CHANNEL_ID || "915789984282325016" },
-      { guildId: "1473489652295139462", channelId: "1486305778150146161" },
-      { guildId: "915789984282325012",  channelId: "1487950030756384798" },
-      { guildId: "915789984282325012",  channelId: "1487945263250407484", mentionOnly: true },
-      // { guildId: "1473489652295139462", channelId: "1473489653699969219", mentionOnly: true }, // disabled
-    ];
+// e.g. DISCORD_CHANNELS="guildA:chanA,guildB:chanB,guildC:chanC:mention"
+const ALLOWED_CHANNELS = (process.env.DISCORD_CHANNELS || "")
+  .split(",").filter(Boolean).map((s) => {
+    const parts = s.trim().split(":");
+    const entry = { guildId: parts[0], channelId: parts[1] };
+    if (parts[2] === "mention") entry.mentionOnly = true;
+    return entry;
+  });
 
 try { validateName(SANDBOX, "SANDBOX_NAME"); } catch (e) { console.error(e.message); process.exit(1); }
 
@@ -1167,9 +1158,9 @@ async function getOrCreateContextCache(systemInstruction, geminiTools, toolConfi
 
 // ── Instagram Graph API direct posting (replaces Buffer.com) ─────
 
-const IG_USER_ID    = process.env.IG_USER_ID    || "17841441846096632";
+const IG_USER_ID    = process.env.IG_USER_ID    || "";
 const FB_PAGE_TOKEN = process.env.FB_PAGE_TOKEN;
-const FB_APP_ID     = process.env.FB_APP_ID     || "933762889554343";
+const FB_APP_ID     = process.env.FB_APP_ID     || "";
 const FB_APP_SECRET = process.env.FB_APP_SECRET;
 
 async function graphApiRequest(path, params = {}) {
@@ -2705,7 +2696,7 @@ const extractModelName = bu.extractModelName;
 
 // ── Video rate limiter ────────────────────────────────────────────
 // Owner (mrbigpipesyt) has unlimited generations. Everyone else: 7 videos/hour.
-const OWNER_ID_GLOBAL = "915725168565960784";
+const OWNER_ID_GLOBAL = process.env.DISCORD_OWNER_ID || "";
 const VIDEO_RATE_LIMIT = 7;
 const VIDEO_RATE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 const _videoUsage = new Map(); // userId → [timestamp, ...]
@@ -2911,7 +2902,7 @@ client.on("interactionCreate", async (interaction) => {
 
       // ── Grok post to IG (grokpost0..3) ─────────────────────────────────────
       if (action.startsWith("grokpost")) {
-        const OWNER_ID = "915725168565960784";
+        const OWNER_ID = OWNER_ID_GLOBAL;
         if (interaction.user.id !== OWNER_ID) {
           await interaction.reply({ content: "⚠️ Only the bot owner can post to Instagram.", ephemeral: true }); return;
         }
@@ -3000,7 +2991,7 @@ client.on("interactionCreate", async (interaction) => {
         }
       } else if (action === "post" || action === "post_vid" || action === "post_music") {
         // Only owner can post to Instagram
-        const OWNER_ID = "915725168565960784";
+        const OWNER_ID = OWNER_ID_GLOBAL;
         if (interaction.user.id !== OWNER_ID) {
           await interaction.reply({ content: "⚠️ Only the bot owner can post to Instagram.", ephemeral: true });
           return;
@@ -3132,7 +3123,7 @@ client.on("interactionCreate", async (interaction) => {
 
       } else if (action === "postigimg") {
         // Post first frame of GIF or MP4 as Instagram image post
-        const OWNER_ID = "915725168565960784";
+        const OWNER_ID = OWNER_ID_GLOBAL;
         if (interaction.user.id !== OWNER_ID) {
           await interaction.reply({ content: "⚠️ Only the bot owner can post to Instagram.", ephemeral: true });
           return;
@@ -3175,7 +3166,7 @@ client.on("interactionCreate", async (interaction) => {
 
       } else if (action === "postigreel" || action === "postigv") {
         // Post GIF as MP4 Reel — scale to min 540px wide, loop to ≥5s, CRF 26
-        const OWNER_ID = "915725168565960784";
+        const OWNER_ID = OWNER_ID_GLOBAL;
         if (interaction.user.id !== OWNER_ID) {
           await interaction.reply({ content: "⚠️ Only the bot owner can post to Instagram.", ephemeral: true });
           return;
@@ -4277,7 +4268,7 @@ client.on("interactionCreate", async (interaction) => {
 
     // /post
     if (cmd === "post") {
-      const OWNER_ID = "915725168565960784";
+      const OWNER_ID = OWNER_ID_GLOBAL;
       if (interaction.user.id !== OWNER_ID) {
         await interaction.reply({ content: "⚠️ Only the bot owner can post to social media.", ephemeral: true });
         return;
@@ -4617,7 +4608,8 @@ client.on("messageCreate", async (msg) => {
     roastAgentBusy.set(msg.author.id, true);
     await msg.channel.sendTyping().catch(() => {});
     let prompt;
-    if (msg.channelId === "1486305778150146161") {
+    const niceChannel = process.env.DISCORD_NICE_CHANNEL_ID || "";
+    if (niceChannel && msg.channelId === niceChannel) {
       prompt = `A Discord user named "${msg.author.username}" just said: "${lastRoastTargetMessage}". Respond to them with genuine love, kindness, empathy, and compassion. Be warm and helpful. If they seem upset or struggling, acknowledge their feelings and offer support. Keep it sincere and heartfelt, 2-3 sentences. Reply only with the response, no intro.`;
     } else {
       prompt = `Roast this Discord user hard. Their name is "${msg.author.username}" and they just said: "${lastRoastTargetMessage}". They are known for spending their time harassing and stalking livestreamers — that is literally their hobby. Give them a sharp, savage, 3-4 sentence roast that mocks what they said, their sad obsession with bothering streamers, and their obvious lack of a real life. Be creative and cutting. Reply only with the roast, no intro.`;
@@ -4903,7 +4895,7 @@ client.on("messageCreate", async (msg) => {
   // Anyone can delete messages the bot itself posted.
   // Only the owner can delete messages from other users.
   if (msg.content.trim().startsWith("!delete ")) {
-    const OWNER_ID = "915725168565960784";
+    const OWNER_ID = OWNER_ID_GLOBAL;
     const targetId = msg.content.trim().split(/\s+/)[1];
     try {
       const targetMsg = await msg.channel.messages.fetch(targetId);
@@ -4920,7 +4912,7 @@ client.on("messageCreate", async (msg) => {
   }
 
   // Block command/jailbreak attempts (except from trusted owner)
-  const TRUSTED_USER = "915725168565960784"; // mrbigpipesyt (owner)
+  const TRUSTED_USER = OWNER_ID_GLOBAL;
   if (msg.author.id !== TRUSTED_USER && isCommandAttempt(msg.content)) {
     await msg.reply("Nice try. I don't take orders from chat. 💅").catch(() => {});
     return;
@@ -6014,7 +6006,7 @@ Output ONLY the JSON object. No markdown, no explanation.`;
 
     // Check for Buffer social post token: [BUFFER_POST: channels="instagram,youtube" caption="..." media=/tmp/...]
     const bufferMatch = mutableResponse.match(/\[BUFFER_POST:\s*([\s\S]*?)\]/i);
-    if (bufferMatch && msg.author.id === "915725168565960784") {
+    if (bufferMatch && msg.author.id === OWNER_ID_GLOBAL) {
       const bArgs      = bufferMatch[1];
       const captionM   = bArgs.match(/caption\s*=\s*"([\s\S]*?)"/i);
       const channelsM  = bArgs.match(/channels\s*=\s*"([^"]+)"/i);
