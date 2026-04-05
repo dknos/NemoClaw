@@ -539,7 +539,7 @@ async function getPublicMediaUrl(fileBuffer, mimeType) {
  * URL input: post directly via Graph API
  */
 async function postToInstagram(caption, mediaUrl = null, mediaType = "IMAGE") {
-  const IG_USER_ID = process.env.IG_USER_ID || "17841441846096632";
+  const IG_USER_ID = process.env.IG_USER_ID || "";
   const FB_PAGE_TOKEN = process.env.FB_PAGE_TOKEN || "";
 
   if (!IG_USER_ID || !FB_PAGE_TOKEN) {
