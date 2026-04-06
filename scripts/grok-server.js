@@ -13,14 +13,14 @@
 
 "use strict";
 
-const { chromium } = require("/home/nemoclaw/.nemoclaw/source/node_modules/playwright-core");
+const { chromium } = require("/home/nemoclaw/.npm/_npx/e41f203b7505f1fb/node_modules/playwright-core");
 const http = require("http");
 const fs   = require("fs");
 const path = require("path");
 const https = require("https");
 
 const PORT            = 3091;
-const CHROMIUM_PATH   = "/home/nemoclaw/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome";
+const CHROMIUM_PATH   = "/home/nemoclaw/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome";
 const COOKIE_FILE     = process.env.GROK_COOKIE_FILE
   || path.join(process.env.HOME, ".nemoclaw", "grok-cookies.json");
 const X_USER          = process.env.X_USERNAME || "";
@@ -139,6 +139,18 @@ async function generate(prompt) {
   await page.goto("https://grok.com/imagine", { waitUntil: "domcontentloaded", timeout: 30000 });
   await page.waitForTimeout(2000);
 
+  // Dismiss cookie/privacy banners that block interaction
+  await page.evaluate(() => {
+    const btns = [...document.querySelectorAll("button, a, div[role='button']")];
+    for (const b of btns) {
+      const txt = (b.innerText || "").trim().toLowerCase();
+      if (txt === "reject all" || txt === "accept all" || txt === "allow all" || txt === "dismiss" || txt === "got it" || txt === "close") {
+        b.click(); break;
+      }
+    }
+  }).catch(() => {});
+  await page.waitForTimeout(500);
+
   // Check session still valid
   const stillLoggedIn = await page.evaluate(() => !document.body.innerText.includes("Sign in"));
   if (!stillLoggedIn) {
@@ -170,41 +182,63 @@ async function generate(prompt) {
     await inputEl.fill(prompt);
   }
   await page.waitForTimeout(400);
-  // Submit: disable ProseMirror overlay, trusted mouse click on ↑ send button
-  const sendPos = await page.evaluate(() => {
-    const allBtns = [...document.querySelectorAll("button, [role='button']")];
-    for (const b of allBtns) {
-      const label = (b.getAttribute("aria-label") || "").toLowerCase();
-      const r = b.getBoundingClientRect();
-      if ((label.includes("submit") || label.includes("send")) && r.width > 0 && r.right > window.innerWidth - 250) {
-        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), how: label };
-      }
+
+  // Snapshot existing images BEFORE submit so we can ignore templates later
+  const existingImgSrcs = await page.evaluate(() => {
+    const srcs = new Set();
+    for (const img of document.querySelectorAll("img")) {
+      const src = img.src || img.getAttribute("src") || "";
+      if (src && !src.includes("profile_images") && !src.includes("avatar") && !src.includes("icon") && !src.includes("logo"))
+        srcs.add(src);
     }
-    const bottom = allBtns.filter(b => { const r = b.getBoundingClientRect(); return r.top > window.innerHeight - 150 && r.width > 0; })
-      .sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right);
-    if (bottom.length) { const r = bottom[0].getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), how: "rightmost" }; }
-    return null;
-  });
-  if (sendPos) {
+    return [...srcs];
+  }).catch(() => []);
+  console.log(`[grok-server] existing images on page before generation: ${existingImgSrcs.length}`);
+
+  // Submit: Enter key is most reliable — Grok's button UI keeps changing
+  await inputEl.focus().catch(() => {});
+  await page.keyboard.press("Enter");
+  console.log("[grok-server] submitted via Enter key");
+
+  // Wait and verify generation actually started
+  await page.waitForTimeout(4000);
+  const generationStarted = await page.evaluate(() => {
+    const t = document.body.innerText || "";
+    return !t.includes("Featured Templates") || t.includes("Generating") || t.includes("Cancel");
+  }).catch(() => true);
+
+  if (!generationStarted) {
+    console.log("[grok-server] Enter didn't trigger generation — trying button click fallback");
+    // Try clicking submit/send button
     await page.evaluate(() => {
-      document.querySelectorAll('.ProseMirror, .tiptap, [contenteditable="true"]').forEach(el => { el.dataset.peSaved = el.style.pointerEvents; el.style.pointerEvents = "none"; });
-    });
-    await page.mouse.click(sendPos.x, sendPos.y);
-    await page.evaluate(() => {
-      document.querySelectorAll("[data-pe-saved]").forEach(el => { el.style.pointerEvents = el.dataset.peSaved || ""; delete el.dataset.peSaved; });
-    });
-    console.log(`[grok-server] submitted via mouse click at (${sendPos.x},${sendPos.y}) [${sendPos.how}]`);
-  } else {
-    await inputEl.press("Enter");
-    console.log("[grok-server] submitted via Enter (fallback)");
+      const btns = [...document.querySelectorAll("button, [role='button']")];
+      for (const b of btns) {
+        const label = (b.getAttribute("aria-label") || "").toLowerCase();
+        if (label.includes("submit") || label.includes("send")) { b.click(); return; }
+      }
+      // Rightmost bottom button
+      const bottom = btns.filter(b => { const r = b.getBoundingClientRect(); return r.top > window.innerHeight - 200 && r.width > 0 && r.width < 100; })
+        .sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right);
+      if (bottom.length) bottom[0].click();
+    }).catch(() => {});
+    await page.waitForTimeout(3000);
+
+    // Last resort: re-focus and Enter again
+    const stillStuck = await page.evaluate(() => document.body.innerText.includes("Featured Templates")).catch(() => false);
+    if (stillStuck) {
+      console.log("[grok-server] still on Discover — re-focusing and pressing Enter");
+      const retryInput = await page.$('textarea, [role="textbox"], [contenteditable="true"]');
+      if (retryInput) { await retryInput.focus(); await page.keyboard.press("Enter"); }
+      else await page.keyboard.press("Enter");
+      await page.waitForTimeout(2000);
+    }
   }
-  console.log("[grok-server] waiting 30s for generation...");
 
-  // Wait 30s for grok to start generating
-  await page.waitForTimeout(30000);
+  console.log("[grok-server] polling for new images...");
 
-  // Poll for real images (up to 120s more)
-  const imgSrcs = await waitForImages(120000, 4);
+  // Poll for real images (up to 150s), ignoring pre-existing ones
+  // No blind wait — start polling immediately, images typically appear in 15-25s
+  const imgSrcs = await waitForImages(210000, 4, existingImgSrcs);
   if (!imgSrcs || imgSrcs.length === 0) {
     const dbg = `/tmp/grok-server-fail-${Date.now()}.png`;
     await page.screenshot({ path: dbg }).catch(() => {});
@@ -230,11 +264,15 @@ async function generate(prompt) {
   return outPaths;
 }
 
-async function waitForImages(timeoutMs, maxImages) {
+async function waitForImages(timeoutMs, maxImages, ignoreSrcs = []) {
+  const ignoreSet = new Set(ignoreSrcs);
   const start = Date.now();
+  const MIN_WAIT_MS = 10000; // Grok takes at least 5-6s — skip first 10s to avoid template images
   let screenshotDone = false;
+  let generationDetected = false;
+
   while (Date.now() - start < timeoutMs) {
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(1500);
 
     if (!screenshotDone && Date.now() - start > 20000) {
       screenshotDone = true;
@@ -243,12 +281,63 @@ async function waitForImages(timeoutMs, maxImages) {
       console.log(`[grok-server] mid-gen screenshot: ${dbg}`);
     }
 
-    const srcs = await page.evaluate((max) => {
+    // Check page state — detect generation in progress or completed
+    const pageState = await page.evaluate(() => {
+      const t = document.body.innerText || "";
+      const hasGenerating = t.includes("Generating") || t.includes("Cancel");
+      const hasError = t.includes("Something went wrong") || t.includes("rate limit") || t.includes("Unable to generate");
+      const hasTemplates = t.includes("Featured Templates");
+      // Look for user-generated image URLs (assets.grok.com/users/)
+      const userImgs = [...document.querySelectorAll("img")]
+        .filter(img => {
+          const src = img.src || "";
+          const rect = img.getBoundingClientRect();
+          return src.includes("assets.grok.com/users/") && rect.width > 150 && rect.height > 100;
+        })
+        .map(img => img.src);
+      return { hasGenerating, hasError, hasTemplates, userImgs };
+    }).catch(() => ({ hasGenerating: false, hasError: false, hasTemplates: false, userImgs: [] }));
+
+    if (pageState.hasError) throw new Error("grok.com reported a generation error");
+
+    if (pageState.hasGenerating) {
+      generationDetected = true;
+      console.log(`[grok-server] generation in progress... +${Math.round((Date.now() - start) / 1000)}s`);
+      continue;
+    }
+
+    // Log diagnostic info every 15s
+    const elapsed = Math.round((Date.now() - start) / 1000);
+    if (elapsed % 15 < 2) {
+      // Get ALL large images for debugging
+      const imgDiag = await page.evaluate(({ ignore }) => {
+        const ignoreSet = new Set(ignore);
+        const imgs = [...document.querySelectorAll("img")];
+        const large = imgs.filter(img => { const r = img.getBoundingClientRect(); return r.width > 100 && r.height > 80; });
+        const newOnes = large.filter(img => !ignoreSet.has(img.src || ""));
+        const dataNew = newOnes.filter(img => (img.src || "").startsWith("data:") && (img.src || "").length > 8000);
+        const httpsNew = newOnes.filter(img => (img.src || "").startsWith("https:"));
+        const blobNew = newOnes.filter(img => (img.src || "").startsWith("blob:"));
+        return {
+          totalImgs: imgs.length, large: large.length, newLarge: newOnes.length,
+          dataNew: dataNew.length, httpsNew: httpsNew.length, blobNew: blobNew.length,
+          samples: newOnes.slice(0, 3).map(img => ({ prefix: (img.src || "").slice(0, 40), len: (img.src || "").length, w: Math.round(img.getBoundingClientRect().width) }))
+        };
+      }, { ignore: [...ignoreSet] }).catch(() => ({}));
+      console.log(`[grok-server] diag +${elapsed}s: userImgs=${pageState.userImgs.length}, genDetected=${generationDetected}, ignoreSet=${ignoreSet.size}, ${JSON.stringify(imgDiag)}`);
+    }
+
+    // Don't check for results too early
+    if (Date.now() - start < MIN_WAIT_MS && !generationDetected) continue;
+
+    // Look for any new large images not in the ignore set (data:, blob:, https:)
+    const srcs = await page.evaluate(({ max, ignore }) => {
+      const ignoreSet = new Set(ignore);
       const seen = new Set(); const results = [];
       for (const img of document.querySelectorAll("img")) {
         if (results.length >= max) break;
         const src = img.src || img.getAttribute("src") || "";
-        if (!src || seen.has(src)) continue;
+        if (!src || seen.has(src) || ignoreSet.has(src)) continue;
         const rect = img.getBoundingClientRect();
         if (rect.width < 150 || rect.height < 100) continue;
         if (src.includes("profile_images") || src.includes("avatar") || src.includes("icon") ||
@@ -260,7 +349,7 @@ async function waitForImages(timeoutMs, maxImages) {
         }
       }
       return results;
-    }, maxImages).catch(() => []);
+    }, { max: maxImages, ignore: [...ignoreSet] }).catch(() => []);
 
     // Resolve blob URLs
     const resolved = [];
@@ -277,15 +366,45 @@ async function waitForImages(timeoutMs, maxImages) {
     }
 
     if (resolved.length > 0) {
-      console.log(`[grok-server] found ${resolved.length} image(s) at +${Math.round((Date.now() - start) / 1000)}s`);
-      return resolved;
+      console.log(`[grok-server] found ${resolved.length} image(s) at +${Math.round((Date.now() - start) / 1000)}s — waiting for full resolution...`);
+      await page.waitForTimeout(5000);
+      // Re-grab after stabilization — sources may have changed to higher-res
+      const finalSrcs = await page.evaluate(({ max, ignore }) => {
+        const ignoreSet = new Set(ignore);
+        const seen = new Set(); const results = [];
+        for (const img of document.querySelectorAll("img")) {
+          if (results.length >= max) break;
+          const src = img.src || img.getAttribute("src") || "";
+          if (!src || seen.has(src) || ignoreSet.has(src)) continue;
+          const rect = img.getBoundingClientRect();
+          if (rect.width < 150 || rect.height < 100) continue;
+          if (src.includes("profile_images") || src.includes("avatar") || src.includes("icon") ||
+              src.includes("logo") || src.includes("favicon") || src.includes("adsct") ||
+              src.includes("analytics.twitter")) continue;
+          if (src.startsWith("data:") && src.length < 8000) continue;
+          if (src.startsWith("blob:") || src.startsWith("data:") || src.startsWith("https:")) {
+            seen.add(src); results.push(src);
+          }
+        }
+        return results;
+      }, { max: maxImages, ignore: [...ignoreSet] }).catch(() => []);
+      // Resolve any new blobs
+      const finalResolved = [];
+      for (const src of (finalSrcs.length > 0 ? finalSrcs : srcs)) {
+        if (src.startsWith("blob:")) {
+          const dataUrl = await page.evaluate(async blobUrl => {
+            try {
+              const res = await fetch(blobUrl); const blob = await res.blob();
+              return new Promise(r => { const rd = new FileReader(); rd.onloadend = () => r(rd.result); rd.readAsDataURL(blob); });
+            } catch { return null; }
+          }, src);
+          if (dataUrl) finalResolved.push(dataUrl);
+        } else { finalResolved.push(src); }
+      }
+      const results = finalResolved.length > 0 ? finalResolved : resolved;
+      console.log(`[grok-server] returning ${results.length} full-res image(s) at +${Math.round((Date.now() - start) / 1000)}s`);
+      return results;
     }
-
-    const hasError = await page.evaluate(() => {
-      const t = document.body.innerText || "";
-      return t.includes("Something went wrong") || t.includes("rate limit") || t.includes("Unable to generate");
-    }).catch(() => false);
-    if (hasError) throw new Error("grok.com reported a generation error");
 
     console.log(`[grok-server] waiting... +${Math.round((Date.now() - start) / 1000)}s`);
   }
@@ -647,40 +766,6 @@ async function generateFromImage(imageBuffer, prompt, mode = "video") {
     else await inputEl.fill(prompt);
     await page.waitForTimeout(300);
 
-    // Submit: find the ↑ arrow send button position, disable ProseMirror overlay, trusted mouse click.
-    // Same technique that fixed the "..." extend button — ProseMirror overlay intercepts pointer events.
-    const sendPos = await page.evaluate(() => {
-      // Log all bottom-right buttons for diagnostics
-      const allBtns = [...document.querySelectorAll("button, [role='button']")];
-      const bottomRight = allBtns.filter(b => {
-        const r = b.getBoundingClientRect();
-        return r.right > window.innerWidth - 250 && r.top > window.innerHeight - 200 && r.width > 0;
-      }).map(b => {
-        const r = b.getBoundingClientRect();
-        return { label: b.getAttribute("aria-label") || "", text: (b.innerText || "").trim().slice(0, 20),
-          x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), w: Math.round(r.width), h: Math.round(r.height) };
-      });
-      console.log("[grok-diag] bottom-right buttons:", JSON.stringify(bottomRight));
-      // Find send/submit button
-      for (const b of allBtns) {
-        const label = (b.getAttribute("aria-label") || "").toLowerCase();
-        const r = b.getBoundingClientRect();
-        if ((label.includes("submit") || label.includes("send")) && r.width > 0 && r.right > window.innerWidth - 250) {
-          return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), how: `label:${label}` };
-        }
-      }
-      // Fallback: rightmost button in bottom 150px
-      const bottom = allBtns.filter(b => {
-        const r = b.getBoundingClientRect();
-        return r.top > window.innerHeight - 150 && r.width > 0 && r.height > 0;
-      }).sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right);
-      if (bottom.length) {
-        const r = bottom[0].getBoundingClientRect();
-        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), how: `rightmost:${bottom[0].getAttribute("aria-label") || "?"}` };
-      }
-      return null;
-    });
-
     // Snapshot existing user-generated video srcs before submit to avoid false positives
     const existingVideoSrcs = await page.evaluate(() =>
       [...document.querySelectorAll("video[src]")]
@@ -689,29 +774,13 @@ async function generateFromImage(imageBuffer, prompt, mode = "video") {
     ).catch(() => []);
     console.log(`[grok-server] existing video srcs: ${existingVideoSrcs.length}`);
 
-    if (sendPos) {
-      // Disable ProseMirror overlay pointer events (same fix as extend "..." button)
-      await page.evaluate(() => {
-        document.querySelectorAll('.ProseMirror, .tiptap, [contenteditable="true"]').forEach(el => {
-          el.dataset.peSaved = el.style.pointerEvents;
-          el.style.pointerEvents = "none";
-        });
-      });
-      await page.mouse.click(sendPos.x, sendPos.y);
-      await page.evaluate(() => {
-        document.querySelectorAll("[data-pe-saved]").forEach(el => {
-          el.style.pointerEvents = el.dataset.peSaved || "";
-          delete el.dataset.peSaved;
-        });
-      });
-      console.log(`[grok-server] ${mode} submitted via mouse click at (${sendPos.x},${sendPos.y}) [${sendPos.how}]`);
-    } else {
-      await inputEl.press("Enter");
-      console.log(`[grok-server] ${mode} submitted via Enter (no send button found)`);
-    }
+    // Submit: Enter key is most reliable — Grok's button UI keeps changing
+    await inputEl.focus().catch(() => {});
+    await page.keyboard.press("Enter");
+    console.log(`[grok-server] ${mode} submitted via Enter key`);
 
     if (mode === "video") {
-      // Check if generation actually started within 5s; if not, retry with keyboard Enter
+      // Check if generation actually started within 5s; if not, retry with button click
       await page.waitForTimeout(5000);
       const genStarted = await page.evaluate(() => {
         const t = document.body.innerText || "";
@@ -719,21 +788,20 @@ async function generateFromImage(imageBuffer, prompt, mode = "video") {
       }).catch(() => false);
 
       if (!genStarted) {
-        console.log("[grok-server] generation did not start after submit — retrying via keyboard Enter");
-        // Re-focus the input and press Enter
-        for (const sel of ['[placeholder*="reference" i]', '[placeholder*="imagine" i]', '[role="textbox"]', '[contenteditable="true"]']) {
-          try {
-            const el = await page.$(sel);
-            if (el) { await el.click({ force: true }).catch(() => {}); break; }
-          } catch {}
-        }
-        await page.keyboard.press("Enter");
+        console.log("[grok-server] generation did not start after Enter — retrying via button click");
+        await page.evaluate(() => {
+          const btns = [...document.querySelectorAll("button, [role='button']")];
+          for (const b of btns) {
+            const label = (b.getAttribute("aria-label") || "").toLowerCase();
+            if (label.includes("submit") || label.includes("send")) { b.click(); return; }
+          }
+        }).catch(() => {});
         await page.waitForTimeout(3000);
         const genStarted2 = await page.evaluate(() => {
           const t = document.body.innerText || "";
           return t.includes("Generating") || t.includes("Cancel Video");
         }).catch(() => false);
-        console.log(`[grok-server] generation started after retry: ${genStarted2}`);
+        console.log(`[grok-server] generation started after button retry: ${genStarted2}`);
       }
 
       await page.waitForTimeout(10000);
@@ -1248,6 +1316,67 @@ const server = http.createServer(async (req, res) => {
         sessionReady = false;
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: e.message }));
+      } finally {
+        busy = false;
+      }
+    });
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/generate-txt2vid") {
+    if (busy) {
+      res.writeHead(429, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "busy" }));
+      return;
+    }
+    let body = "";
+    req.on("data", d => body += d);
+    req.on("end", async () => {
+      let parsed;
+      try { parsed = JSON.parse(body); } catch { parsed = {}; }
+      const { prompt: vidPrompt, duration } = parsed;
+      if (!vidPrompt) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "missing prompt" }));
+        return;
+      }
+      busy = true;
+      resetIdleTimer();
+      const tempFiles = [];
+      try {
+        // Phase 1: txt2img — generate image from prompt
+        console.log(`[grok-server] txt2vid phase 1: generating image for "${vidPrompt.slice(0, 60)}..."`);
+        const imagePaths = await generate(vidPrompt);
+        if (!imagePaths || imagePaths.length === 0) throw new Error("txt2img phase produced no images");
+        // Auto-pick first image
+        const srcImage = imagePaths[0];
+        tempFiles.push(...imagePaths);
+        console.log(`[grok-server] txt2vid phase 1 done: ${srcImage}`);
+
+        // Phase 2: i2v — feed image into video generation
+        const imageBuffer = fs.readFileSync(srcImage);
+        console.log(`[grok-server] txt2vid phase 2: generating video (${duration || 4}s)...`);
+        const videoResult = await generateVideo(imageBuffer, vidPrompt);
+        const videoPath = typeof videoResult === "string" ? videoResult : videoResult?.path;
+        if (!videoPath) throw new Error("i2v phase produced no video");
+        console.log(`[grok-server] txt2vid complete: ${videoPath}`);
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ path: videoPath, sourceImage: srcImage }));
+
+        // Cleanup source images (keep video for caller to consume)
+        for (const f of tempFiles) {
+          try { if (f !== srcImage) fs.unlinkSync(f); } catch {}
+        }
+      } catch (e) {
+        console.error("[grok-server] txt2vid error:", e.message);
+        sessionReady = false;
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: e.message }));
+        // Cleanup on failure
+        for (const f of tempFiles) {
+          try { fs.unlinkSync(f); } catch {}
+        }
       } finally {
         busy = false;
       }

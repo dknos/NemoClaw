@@ -169,6 +169,126 @@ const commands = [
     .addAttachmentOption(o => o.setName("audio").setDescription("Audio file to use as soundtrack (mp3, wav, ogg...)").setRequired(true)),
 
   new SlashCommandBuilder()
+    .setName("edit")
+    .setDescription("Compose a video from images, clips, and music")
+    .addStringOption(o => o.setName("preset").setDescription("Video format")
+      .addChoices(
+        { name: "Short (14s, 9:16)", value: "short" },
+        { name: "Vertical (60s, 9:16)", value: "vertical" },
+        { name: "Vertical Long (120s, 9:16)", value: "vertical-long" },
+        { name: "Full (60s, 16:9)", value: "full" },
+        { name: "Long (120s, 16:9)", value: "full-long" },
+      ))
+    .addStringOption(o => o.setName("style").setDescription("Visual style")
+      .addChoices(
+        { name: "Cinematic", value: "cinematic" },
+        { name: "Vibrant", value: "vibrant" },
+        { name: "Moody", value: "moody" },
+        { name: "Vintage", value: "vintage" },
+        { name: "Dark", value: "dark" },
+        { name: "Dreamy", value: "dreamy" },
+        { name: "Brainslop (jumpcuts, beat-synced)", value: "brainslop" },
+        { name: "Ludicrous (pure chaos)", value: "ludicrous" },
+      ))
+    .addStringOption(o => o.setName("caption").setDescription("Text overlay (shown first 4s)"))
+    .addStringOption(o => o.setName("lyrics").setDescription("Add auto-transcribed lyrics/captions")
+      .addChoices(
+        { name: "Off", value: "off" },
+        { name: "Karaoke (word-by-word highlight)", value: "karaoke" },
+        { name: "Subtitles (standard)", value: "subtitles" },
+        { name: "Viral (big single words)", value: "viral" },
+      ))
+    .addBooleanOption(o => o.setName("beattrack").setDescription("Sync cuts to detected beats in audio"))
+    .addAttachmentOption(o => o.setName("media1").setDescription("Image or video file"))
+    .addAttachmentOption(o => o.setName("media2").setDescription("Second image or video"))
+    .addAttachmentOption(o => o.setName("media3").setDescription("Third image or video"))
+    .addAttachmentOption(o => o.setName("media4").setDescription("Fourth image or video"))
+    .addAttachmentOption(o => o.setName("audio").setDescription("Music track (mp3, wav, ogg)")),
+
+  new SlashCommandBuilder()
+    .setName("edit-add")
+    .setDescription("Add media to your edit queue (call multiple times for 10+ files)")
+    .addAttachmentOption(o => o.setName("media1").setDescription("Image, video, or audio file").setRequired(true))
+    .addAttachmentOption(o => o.setName("media2").setDescription("Second file"))
+    .addAttachmentOption(o => o.setName("media3").setDescription("Third file"))
+    .addAttachmentOption(o => o.setName("media4").setDescription("Fourth file"))
+    .addAttachmentOption(o => o.setName("media5").setDescription("Fifth file")),
+
+  new SlashCommandBuilder()
+    .setName("edit-go")
+    .setDescription("Render your edit queue into a video")
+    .addStringOption(o => o.setName("preset").setDescription("Video format")
+      .addChoices(
+        { name: "Short (14s, 9:16)", value: "short" },
+        { name: "Vertical (60s, 9:16)", value: "vertical" },
+        { name: "Vertical Long (120s, 9:16)", value: "vertical-long" },
+        { name: "Full (60s, 16:9)", value: "full" },
+        { name: "Long (120s, 16:9)", value: "full-long" },
+      ))
+    .addStringOption(o => o.setName("style").setDescription("Visual style")
+      .addChoices(
+        { name: "Cinematic", value: "cinematic" },
+        { name: "Vibrant", value: "vibrant" },
+        { name: "Moody", value: "moody" },
+        { name: "Vintage", value: "vintage" },
+        { name: "Dark", value: "dark" },
+        { name: "Dreamy", value: "dreamy" },
+        { name: "Brainslop (jumpcuts, beat-synced)", value: "brainslop" },
+        { name: "Ludicrous (pure chaos)", value: "ludicrous" },
+      ))
+    .addStringOption(o => o.setName("caption").setDescription("Text overlay (shown first 4s)")),
+
+  new SlashCommandBuilder()
+    .setName("edit-queue")
+    .setDescription("Show what's in your edit queue"),
+
+  new SlashCommandBuilder()
+    .setName("edit-clear")
+    .setDescription("Clear your edit queue"),
+
+  new SlashCommandBuilder()
+    .setName("capcut")
+    .setDescription("Compose a video with CapCut effects & transitions (premium quality)")
+    .addStringOption(o => o.setName("preset").setDescription("Video format")
+      .addChoices(
+        { name: "Short (14s, 9:16)", value: "short" },
+        { name: "Vertical (60s, 9:16)", value: "vertical" },
+        { name: "Vertical Long (120s, 9:16)", value: "vertical-long" },
+        { name: "Full (60s, 16:9)", value: "full" },
+        { name: "Long (120s, 16:9)", value: "full-long" },
+      ))
+    .addStringOption(o => o.setName("style").setDescription("Visual style")
+      .addChoices(
+        { name: "Cinematic", value: "cinematic" },
+        { name: "Vibrant", value: "vibrant" },
+        { name: "Moody", value: "moody" },
+        { name: "Vintage", value: "vintage" },
+        { name: "Dark", value: "dark" },
+        { name: "Dreamy", value: "dreamy" },
+        { name: "Brainslop (beat-synced)", value: "brainslop" },
+        { name: "Ludicrous (chaos)", value: "ludicrous" },
+      ))
+    .addStringOption(o => o.setName("lyrics").setDescription("Auto-transcribed lyrics/captions")
+      .addChoices(
+        { name: "Off", value: "off" },
+        { name: "Karaoke (word-by-word)", value: "karaoke" },
+        { name: "Subtitles (standard)", value: "subtitles" },
+        { name: "Viral (big single words)", value: "viral" },
+      ))
+    .addBooleanOption(o => o.setName("beattrack").setDescription("Sync cuts to detected beats"))
+    .addStringOption(o => o.setName("render").setDescription("Render mode")
+      .addChoices(
+        { name: "CapCut Desktop (best quality)", value: "desktop" },
+        { name: "Draft only (open in CapCut)", value: "draft" },
+      ))
+    .addStringOption(o => o.setName("caption").setDescription("Text overlay"))
+    .addAttachmentOption(o => o.setName("media1").setDescription("Image or video file"))
+    .addAttachmentOption(o => o.setName("media2").setDescription("Second file"))
+    .addAttachmentOption(o => o.setName("media3").setDescription("Third file"))
+    .addAttachmentOption(o => o.setName("media4").setDescription("Fourth file"))
+    .addAttachmentOption(o => o.setName("audio").setDescription("Music track (mp3, wav, ogg)")),
+
+  new SlashCommandBuilder()
     .setName("create")
     .setDescription("Create image, video, or audio — pick a type and model"),
 ];

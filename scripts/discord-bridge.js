@@ -5161,6 +5161,10 @@ client.on("interactionCreate", async (interaction) => {
       const preset  = interaction.options.getString("preset") || "short";
       const style   = interaction.options.getString("style") || "cinematic";
       const caption = interaction.options.getString("caption") || null;
+      const lyricsOpt = interaction.options.getString("lyrics") || "off";
+      const lyrics = lyricsOpt !== "off";
+      const lyricsStyle = lyrics ? lyricsOpt : "karaoke";
+      const beattrack = interaction.options.getBoolean("beattrack") ?? false;
 
       // Collect media from attachments
       const attachments = ["media1", "media2", "media3", "media4", "audio"]
@@ -5189,14 +5193,19 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const mediaDesc = [images.length && `${images.length} img`, videos.length && `${videos.length} vid`, audios.length && `🎵`].filter(Boolean).join(" + ");
-      await interaction.editReply(`🎬 Composing **${preset}** video *(${style})* — ${mediaDesc}...`);
+      const features = [
+        images.length && `${images.length} img`, videos.length && `${videos.length} vid`, audios.length && `🎵`,
+        lyrics && `📝 ${lyricsStyle}`, beattrack && `🥁 beat-sync`,
+      ].filter(Boolean).join(" + ");
+      await interaction.editReply(`🎬 Composing **${preset}** video *(${style})* — ${features}...${lyrics ? "\n⏳ Transcribing lyrics with Whisper..." : ""}`);
 
       try {
         const { editVideo } = require("./lib/video-editor");
+        // Force choppy style if beattrack requested (brainslop is the default beat-synced style)
+        const effectiveStyle = beattrack && !["brainslop", "ludicrous"].includes(style) ? "brainslop" : style;
         const result = await editVideo({
           images, videos, audioBuffer: audios[0] || null,
-          preset, style, caption,
+          preset, style: effectiveStyle, caption, lyrics, lyricsStyle,
         });
 
         const tmpOut = `/tmp/edit-out-${Date.now()}.mp4`;
@@ -5217,6 +5226,91 @@ client.on("interactionCreate", async (interaction) => {
       } catch (e) {
         console.error("[edit] failed:", e);
         await interaction.editReply(`❌ Edit failed: ${e.message.slice(0, 300)}`);
+      }
+      return;
+    }
+
+    // /capcut — CapCut Mate premium video composition
+    if (cmd === "capcut") {
+      await interaction.deferReply();
+      const preset  = interaction.options.getString("preset") || "short";
+      const style   = interaction.options.getString("style") || "cinematic";
+      const caption = interaction.options.getString("caption") || null;
+      const lyricsOpt = interaction.options.getString("lyrics") || "off";
+      const lyrics = lyricsOpt !== "off";
+      const lyricsStyle = lyrics ? lyricsOpt : "karaoke";
+      const beattrack = interaction.options.getBoolean("beattrack") ?? false;
+      const renderMode = interaction.options.getString("render") || "draft";
+
+      // Collect media from attachments
+      const attachments = ["media1", "media2", "media3", "media4", "audio"]
+        .map(k => interaction.options.getAttachment(k)).filter(Boolean);
+
+      const images = [], videos = [], audios = [];
+      for (const att of attachments) {
+        const buf = await fetchBuffer(att.url);
+        const mime = (att.contentType || "").toLowerCase();
+        if (mime.startsWith("image/")) images.push(buf);
+        else if (mime.startsWith("video/")) videos.push(buf);
+        else if (mime.startsWith("audio/")) audios.push(buf);
+      }
+
+      // Fallback to previously generated media
+      if (images.length === 0 && lastGeneratedImageBuffer) images.push(lastGeneratedImageBuffer);
+      if (videos.length === 0 && lastVideoBuffer) videos.push(lastVideoBuffer);
+      if (audios.length === 0) {
+        for (const [, ctx] of generationContext) {
+          if (ctx.audioBuf && (ctx.type === "music" || ctx.type === "suno")) { audios.push(ctx.audioBuf); break; }
+        }
+      }
+
+      if (images.length === 0 && videos.length === 0) {
+        await interaction.editReply("❌ No media found. Attach files or generate images/videos first.");
+        return;
+      }
+
+      const features = [
+        images.length && `${images.length} img`, videos.length && `${videos.length} vid`, audios.length && `🎵`,
+        lyrics && `📝 ${lyricsStyle}`, beattrack && `🥁 beat-sync`,
+      ].filter(Boolean).join(" + ");
+      await interaction.editReply(`🎬 **CapCut** composing **${preset}** *(${style})* — ${features}...\n⏳ Building CapCut draft with effects & transitions...`);
+
+      try {
+        const { capcutCompose, cleanupCompose } = require("./lib/capcut-compose");
+        const effectiveStyle = beattrack && !["brainslop", "ludicrous"].includes(style) ? "brainslop" : style;
+        const result = await capcutCompose({
+          images, videos, audioBuffer: audios[0] || null,
+          preset, style: effectiveStyle, caption, lyrics, lyricsStyle, beattrack,
+        });
+
+        const info = [
+          `📐 ${result.presetCfg.w}x${result.presetCfg.h}`,
+          `🎞 ${result.timelineCount} segments`,
+          result.beats ? `🥁 ${result.beats.bpm} BPM` : null,
+          result.peakCount > 0 ? `⚡ ${result.peakCount} peaks` : null,
+        ].filter(Boolean).join(" | ");
+
+        if (renderMode === "desktop") {
+          // Phase 3: Copy to Desktop and trigger export
+          try {
+            const { exportViaDesktop } = require("./lib/capcut-desktop-export");
+            const exportResult = await exportViaDesktop(result.draftUrl, result.fileServer?.url, result.tmpDir);
+            cleanupCompose(result);
+            await interaction.editReply(`🎬 **CapCut Draft Exported** — ${info}\n✅ ${exportResult.message}\n📁 Draft ID: \`${exportResult.draftId}\``);
+          } catch (exportErr) {
+            cleanupCompose(result);
+            await interaction.editReply(`🎬 **CapCut Draft Created** — ${info}\n⚠️ Desktop export failed: ${exportErr.message}\n📋 Draft URL: \`${result.draftUrl}\`\nOpen CapCut Desktop to render manually.`);
+          }
+        } else {
+          // Draft-only mode
+          cleanupCompose(result);
+          await interaction.editReply(`🎬 **CapCut Draft Created** — ${info}\n📋 Draft: \`${result.draftId}\`\nOpen CapCut Desktop to preview and export.`);
+        }
+
+        generationContext.set(interaction.id, { type: "capcut", draftUrl: result.draftUrl, prompt: caption || `${preset} ${style} capcut` });
+      } catch (e) {
+        console.error("[capcut] failed:", e);
+        await interaction.editReply(`❌ CapCut failed: ${e.message.slice(0, 300)}`);
       }
       return;
     }
@@ -5386,15 +5480,17 @@ client.on("messageCreate", async (msg) => {
     const PRESET_NAMES = ["short", "short-long", "full", "full-long", "vertical", "vertical-long"];
     const STYLE_NAMES = ["cinematic", "vibrant", "moody", "vintage", "dark", "dreamy", "bright", "clean", "brainslop", "ludicrous"];
     const LYRICS_STYLES = ["karaoke", "subtitles", "viral"];
-    let preset = "short", style = "cinematic", captionParts = [], lyrics = false, lyricsStyle = "karaoke";
+    let preset = "short", style = "cinematic", captionParts = [], lyrics = false, lyricsStyle = "karaoke", beattrack = false;
     for (const arg of args) {
       const lower = arg.toLowerCase();
       if (PRESET_NAMES.includes(lower)) preset = lower;
       else if (STYLE_NAMES.includes(lower)) style = lower;
       else if (lower === "lyrics" || lower === "lyric") lyrics = true;
       else if (LYRICS_STYLES.includes(lower)) { lyrics = true; lyricsStyle = lower; }
+      else if (lower === "beattrack" || lower === "beat" || lower === "beats") beattrack = true;
       else captionParts.push(arg);
     }
+    if (beattrack && !["brainslop", "ludicrous"].includes(style)) style = "brainslop";
     const caption = captionParts.join(" ") || null;
 
     const images = [], videos = [], audios = [];
@@ -5476,6 +5572,93 @@ client.on("messageCreate", async (msg) => {
     } catch (e) {
       console.error("[!edit] failed:", e);
       await progressMsg.edit(`❌ Edit failed: ${e.message.slice(0, 300)}`);
+    }
+    return;
+  }
+
+  // ── !capcut message command — CapCut premium composition ─────────────────────
+  if (msg.content && msg.content.toLowerCase().startsWith("!capcut") && !isClaudeQuery) {
+    const args = msg.content.slice(7).trim().split(/\s+/);
+    const PRESET_NAMES = ["short", "short-long", "full", "full-long", "vertical", "vertical-long"];
+    const STYLE_NAMES = ["cinematic", "vibrant", "moody", "vintage", "dark", "dreamy", "bright", "clean", "brainslop", "ludicrous"];
+    const LYRICS_STYLES = ["karaoke", "subtitles", "viral"];
+
+    let preset = "short", style = "cinematic", captionParts = [], lyrics = false, lyricsStyle = "karaoke", beattrack = false, renderMode = "draft";
+    for (const arg of args) {
+      const lower = arg.toLowerCase();
+      if (PRESET_NAMES.includes(lower)) preset = lower;
+      else if (STYLE_NAMES.includes(lower)) style = lower;
+      else if (lower === "lyrics" || lower === "lyric") lyrics = true;
+      else if (LYRICS_STYLES.includes(lower)) { lyrics = true; lyricsStyle = lower; }
+      else if (lower === "beattrack" || lower === "beat" || lower === "beats") beattrack = true;
+      else if (lower === "render:desktop" || lower === "desktop") renderMode = "desktop";
+      else if (lower === "render:draft" || lower === "draft") renderMode = "draft";
+      else captionParts.push(arg);
+    }
+    if (beattrack && !["brainslop", "ludicrous"].includes(style)) style = "brainslop";
+    const caption = captionParts.length > 0 ? captionParts.join(" ") : null;
+
+    // Collect attachments
+    const images = [], videos = [], audios = [];
+    for (const [, att] of msg.attachments) {
+      try {
+        const buf = await fetchBuffer(att.url);
+        if (/\.(mp3|wav|ogg|flac|m4a|aac)$/i.test(att.name || "")) audios.push(buf);
+        else if (/\.(mp4|mov|webm|avi|mkv)$/i.test(att.name || "")) videos.push(buf);
+        else if (/\.(png|jpg|jpeg|gif|webp|avif)$/i.test(att.name || "")) images.push(buf);
+      } catch (e) { console.error(`[!capcut] failed to fetch attachment ${att.name}:`, e.message); }
+    }
+
+    // Fallback to previously generated media
+    if (images.length === 0 && lastGeneratedImageBuffer) images.push(lastGeneratedImageBuffer);
+    if (videos.length === 0 && lastVideoBuffer) videos.push(lastVideoBuffer);
+    if (audios.length === 0) {
+      for (const [, ctx] of generationContext) {
+        if (ctx.audioBuf && (ctx.type === "music" || ctx.type === "suno")) { audios.push(ctx.audioBuf); break; }
+      }
+    }
+
+    if (images.length === 0 && videos.length === 0) {
+      await msg.reply("❌ No media found. Attach files or generate images/videos first.");
+      return;
+    }
+
+    const mediaDesc = [images.length && `${images.length} img`, videos.length && `${videos.length} vid`, audios.length && `🎵`].filter(Boolean).join(" + ");
+    const progressMsg = await msg.reply(`🎬 **CapCut** composing **${preset}** *(${style})* — ${mediaDesc}...\n⏳ Building CapCut draft with effects & transitions...`);
+
+    try {
+      const { capcutCompose, cleanupCompose } = require("./lib/capcut-compose");
+      const result = await capcutCompose({
+        images, videos, audioBuffer: audios[0] || null,
+        preset, style, caption, lyrics, lyricsStyle, beattrack,
+      });
+
+      const info = [
+        `📐 ${result.presetCfg.w}x${result.presetCfg.h}`,
+        `🎞 ${result.timelineCount} segments`,
+        result.beats ? `🥁 ${result.beats.bpm} BPM` : null,
+        result.peakCount > 0 ? `⚡ ${result.peakCount} peaks` : null,
+      ].filter(Boolean).join(" | ");
+
+      if (renderMode === "desktop") {
+        try {
+          const { exportViaDesktop } = require("./lib/capcut-desktop-export");
+          const exportResult = await exportViaDesktop(result.draftUrl, result.fileServer?.url, result.tmpDir);
+          cleanupCompose(result);
+          await progressMsg.edit(`🎬 **CapCut Draft Exported** — ${info}\n✅ ${exportResult.message}\n📁 Draft ID: \`${exportResult.draftId}\``);
+        } catch (exportErr) {
+          cleanupCompose(result);
+          await progressMsg.edit(`🎬 **CapCut Draft Created** — ${info}\n⚠️ Desktop export failed: ${exportErr.message}\n📋 Draft URL: \`${result.draftUrl}\`\nOpen CapCut Desktop to render manually.`);
+        }
+      } else {
+        cleanupCompose(result);
+        await progressMsg.edit(`🎬 **CapCut Draft Created** — ${info}\n📋 Draft: \`${result.draftId}\`\nOpen CapCut Desktop to preview and export.`);
+      }
+
+      generationContext.set(progressMsg.id, { type: "capcut", draftUrl: result.draftUrl, prompt: caption || `${preset} ${style} capcut` });
+    } catch (e) {
+      console.error("[!capcut] failed:", e);
+      await progressMsg.edit(`❌ CapCut failed: ${e.message.slice(0, 300)}`);
     }
     return;
   }

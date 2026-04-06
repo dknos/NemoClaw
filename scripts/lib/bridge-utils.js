@@ -84,12 +84,26 @@ function shouldFireCrewReactions(userMessage, pipesResponse) {
 
 function shouldGetCrewInput(message) {
   if (!message || message.length < 15) return false;
-  if (/\b(transcript|youtube\.com|youtu\.be|search|what is|who is|when did|how does|explain)\b/i.test(message)) return false;
-  if (/\b(generate|make|create|draw|render)\b.{0,30}\b(image|video|photo|picture)\b/i.test(message)) return false;
+  // Skip factual lookups — crew input not useful
+  if (/\b(transcript|youtube\.com|youtu\.be|what is|who is|when did|how does|explain|search)\b/i.test(message)) return false;
+  // Skip very simple commands (single slash commands with no creative decision)
+  if (/^\/(?:help|model|queue)\b/i.test(message)) return false;
+  // Always consult on creative writing
   if (isCreativeTask(message)) return true;
+  // Always consult when user explicitly invokes the crew
   if (/\b(crew|swarm|hey crew|hey swarm|assemble|team|huddle)\b/i.test(message)) return true;
+  // Music/song — crew input on lyrics, style, mood
+  if (/\b(song|music|sing|suno|ace.?step|lyrics|beat|melody|track)\b/i.test(message)) return true;
+  // Image/video generation — crew input on creative direction
+  if (/\b(generate|make|create|draw|render|imagine)\b.{0,40}\b(image|video|photo|picture|gif|art)\b/i.test(message)) return true;
+  // Planning, strategy, decisions
   if (/\b(what.*work on|next.*list|priority|plan|strategy|idea|suggest|decision|direction|collab)\b/i.test(message)) return true;
-  if (/\b(caption|aesthetic|vibe|style|mood|brand|content|viral|trend)\b/i.test(message)) return true;
+  // Aesthetic/creative discussions
+  if (/\b(caption|aesthetic|vibe|style|mood|brand|content|viral|trend|hook|title|cover)\b/i.test(message)) return true;
+  // Social media posting decisions
+  if (/\b(post.*ig|post.*instagram|post.*social|share|publish)\b/i.test(message)) return true;
+  // Longer messages likely need crew perspective (>60 chars, not a simple command)
+  if (message.length > 60 && !/^\//.test(message)) return true;
   return false;
 }
 

@@ -500,6 +500,20 @@ function computeChoppyTimeline({ imagePaths, videoPaths, targetSec, style, beats
     }
   }
 
+  // Distribute onPeak effects evenly throughout the video.
+  // Audio peaks may cluster (e.g. intro drop), causing effects only at the start.
+  // Ensure at least 1 peak effect every 3-4 segments for visual rhythm throughout.
+  const peakCount = segments.filter(s => s.onPeak).length;
+  const desiredPeaks = Math.max(3, Math.ceil(segments.length / 3.5));
+  if (peakCount < desiredPeaks && segments.length > 2) {
+    // Space peaks evenly through the timeline
+    const spacing = Math.max(2, Math.floor(segments.length / desiredPeaks));
+    for (let i = 0; i < segments.length; i++) {
+      segments[i].onPeak = (i % spacing === Math.floor(spacing / 2)); // offset by half so first peak isn't seg 0
+    }
+    console.log(`[video-editor] redistributed peaks: ${segments.filter(s => s.onPeak).length} effects across ${segments.length} segments (was ${peakCount})`);
+  }
+
   console.log(`[video-editor] choppy timeline (${style}): ${segments.length} cuts, ${cursor.toFixed(1)}s, bpm=${bpm}${useRealBeats ? " (beat-synced)" : ""}`);
   return { segments, totalDurationSec: cursor, transitionDurSec: 0, choppy: true };
 }
@@ -612,7 +626,7 @@ async function editVideo({ images = [], videos = [], audioBuffer = null, preset 
   fs.mkdirSync(tmpDir, { recursive: true });
 
   try {
-    // Downscale images to ~2x target resolution (zoompan on 4K is brutal)
+    // Downscale images to ~2x target resolution (zoompan on big images is brutal)
     const maxImgDim = Math.max(presetCfg.w, presetCfg.h) * 2;
     const imagePaths = images.map((buf, i) => {
       const raw = `${tmpDir}/img_raw_${i}.png`;
@@ -631,7 +645,48 @@ async function editVideo({ images = [], videos = [], audioBuffer = null, preset 
       fs.writeFileSync(audioPath, audioBuffer);
     }
 
-    // Beat detection — run if audio provided and style benefits from it
+    // Smart audio offset: skip intro when video is shorter than song.
+    // Transcribe first to find vocal onset, then trim audio so the video
+    // starts where the vocals are instead of wasting time on an intro.
+    let audioOffset = 0;
+    let transcript = null;
+    let lyricsAssPath = null;
+
+    if (lyrics && audioPath) {
+      try {
+        const { transcribeAudio, generateLyricCaptions } = require("./lyrics-captions");
+        transcript = await transcribeAudio(audioPath);
+        const audioDur = transcript.duration || 0;
+        const firstWord = transcript.words?.[0];
+
+        // If video is shorter than audio and vocals start late, skip the intro
+        if (firstWord && firstWord.start > 2.5 && presetCfg.targetSec < audioDur * 0.8) {
+          audioOffset = Math.max(0, firstWord.start - 1.0);
+          console.log(`[video-editor] audio offset: skipping ${audioOffset.toFixed(1)}s intro (vocals at ${firstWord.start.toFixed(1)}s, video=${presetCfg.targetSec}s, song=${audioDur.toFixed(1)}s)`);
+
+          // Trim audio to start at offset
+          const trimmedPath = `${tmpDir}/audio_trimmed.mp3`;
+          ffmpegExec(`-y -ss ${audioOffset.toFixed(3)} -i "${audioPath}" -c copy "${trimmedPath}"`, "trim-audio-intro");
+          audioPath = trimmedPath;
+
+          // Shift transcript timestamps
+          for (const w of transcript.words) { w.start -= audioOffset; w.end -= audioOffset; }
+          for (const s of transcript.segments) { s.start -= audioOffset; s.end -= audioOffset; }
+          transcript.words = transcript.words.filter(w => w.start >= 0);
+          transcript.segments = transcript.segments.filter(s => s.start >= 0);
+        }
+
+        lyricsAssPath = generateLyricCaptions(transcript, {
+          width: presetCfg.w, height: presetCfg.h, style: lyricsStyle,
+          outputPath: `${tmpDir}/lyrics.ass`,
+        });
+        console.log(`[video-editor] lyrics: ${transcript.words.length} words, style=${lyricsStyle}`);
+      } catch (e) {
+        console.warn("[video-editor] lyrics transcription failed:", e.message);
+      }
+    }
+
+    // Beat detection on (possibly trimmed) audio
     let beats = null;
     if (audioPath) {
       try {
@@ -648,23 +703,6 @@ async function editVideo({ images = [], videos = [], audioBuffer = null, preset 
     if (beats) plan.beats = beats;
     plan.preset = presetCfg;
     console.log(`[video-editor] timeline: ${plan.segments.length} segments, ${plan.totalDurationSec.toFixed(1)}s target=${presetCfg.targetSec}s${plan.choppy ? " (choppy)" : ""}`);
-
-    // Lyrics transcription — generates ASS subtitle file for karaoke/viral captions
-    let lyricsAssPath = null;
-    let transcript = null;
-    if (lyrics && audioPath) {
-      try {
-        const { transcribeAudio, generateLyricCaptions } = require("./lyrics-captions");
-        transcript = await transcribeAudio(audioPath);
-        lyricsAssPath = generateLyricCaptions(transcript, {
-          width: presetCfg.w, height: presetCfg.h, style: lyricsStyle,
-          outputPath: `${tmpDir}/lyrics.ass`,
-        });
-        console.log(`[video-editor] lyrics: ${transcript.words.length} words, style=${lyricsStyle}`);
-      } catch (e) {
-        console.warn("[video-editor] lyrics transcription failed:", e.message);
-      }
-    }
 
     const videoBuffer = plan.choppy
       ? await renderChoppyTimeline(plan, { style, caption, audioPath, tmpDir, lyricsAssPath })

@@ -12,12 +12,12 @@
 
 "use strict";
 
-const { chromium } = require("/home/nemoclaw/.nemoclaw/source/node_modules/playwright-core");
+const { chromium } = require("/home/nemoclaw/.npm/_npx/e41f203b7505f1fb/node_modules/playwright-core");
 const fs   = require("fs");
 const path = require("path");
 const readline = require("readline");
 
-const CHROMIUM_PATH = "/home/nemoclaw/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome";
+const CHROMIUM_PATH = "/home/nemoclaw/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome";
 const COOKIE_FILE   = process.env.GROK_COOKIE_FILE
   || path.join(process.env.HOME, ".nemoclaw", "grok-cookies.json");
 
