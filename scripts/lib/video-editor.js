@@ -53,6 +53,14 @@ const IMG_DEFAULT_DUR = 4;
 
 // ── FFmpeg exec with better error messages ─────────────────────────────────
 
+// Build FFmpeg scale filter: crop (default) or stretch mode.
+// Crop: scales up to fill, then crops overshoot — no black bars, may cut edges.
+// Stretch: scales to exact dimensions — may distort, but no cropping.
+function buildScaleFilter(w, h, fps, stretch = false) {
+  if (stretch) return `scale=${w}:${h},fps=${fps}`;
+  return `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},fps=${fps}`;
+}
+
 function ffmpegExec(args, label, timeout = EXEC_TIMEOUT) {
   try {
     execSync(`"${FFMPEG_BIN}" ${args}`, { timeout, stdio: ["pipe", "pipe", "pipe"] });
@@ -160,10 +168,10 @@ function probeDuration(filePath) {
 // ── Stretch strategies for short clips ──────────────────────────────────────
 // Given a clip of `clipDur` seconds, produce a clip of `targetDur` seconds.
 
-function stretchVideo(inputPath, outputPath, clipDur, targetDur, w, h, fps, colorFilter, effectFilter, tmpDir, segIdx) {
+function stretchVideo(inputPath, outputPath, clipDur, targetDur, w, h, fps, colorFilter, effectFilter, tmpDir, segIdx, stretchMode = false) {
   if (clipDur <= 0) clipDur = 5;
   const ratio = targetDur / clipDur;
-  const scaleFilter = `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},fps=${fps}`;
+  const scaleFilter = buildScaleFilter(w, h, fps, stretchMode);
   const extraFilters = [colorFilter, effectFilter].filter(Boolean).join(",");
   const vf = extraFilters ? `${scaleFilter},${extraFilters}` : scaleFilter;
 
@@ -286,7 +294,7 @@ function kenBurnsFilter(index, frames, w, h) {
 
 // ── FFmpeg render pipeline ──────────────────────────────────────────────────
 
-async function renderTimeline(plan, { style = "cinematic", caption = null, audioPath = null, tmpDir, lyricsAssPath = null }) {
+async function renderTimeline(plan, { style = "cinematic", caption = null, audioPath = null, tmpDir, lyricsAssPath = null, stretch = false }) {
   const { segments, totalDurationSec, transitionDurSec } = plan;
   const preset = plan.preset || PRESETS.short;
   const { w, h, fps, videoBitrateK } = preset;
@@ -305,7 +313,7 @@ async function renderTimeline(plan, { style = "cinematic", caption = null, audio
     const effectFilter = getEffectFilter(effectIdx, fps);
 
     if (seg.type === "video") {
-      const strategy = stretchVideo(seg.filePath, outPath, seg.nativeDur, seg.durationSec, w, h, fps, colorFilter, effectFilter, tmpDir, i);
+      const strategy = stretchVideo(seg.filePath, outPath, seg.nativeDur, seg.durationSec, w, h, fps, colorFilter, effectFilter, tmpDir, i, stretch);
       console.log(`[video-editor] segment ${i + 1}/${segments.length} video: ${seg.nativeDur.toFixed(1)}s → ${seg.durationSec.toFixed(1)}s (${strategy}) fx=${effectIdx}`);
     } else {
       // Image → video with Ken Burns + effect
@@ -512,7 +520,7 @@ function computeChoppyTimeline({ imagePaths, videoPaths, targetSec, style, beats
 }
 
 // Render a choppy timeline: normalize each slice then hard-cut concat (no xfade)
-async function renderChoppyTimeline(plan, { style, caption, audioPath, tmpDir, lyricsAssPath = null }) {
+async function renderChoppyTimeline(plan, { style, caption, audioPath, tmpDir, lyricsAssPath = null, stretch = false }) {
   const preset = plan.preset || PRESETS.short;
   const { w, h, fps, videoBitrateK } = preset;
   const colorFilter = STYLE_FILTERS[style] || STYLE_FILTERS.cinematic;
@@ -520,7 +528,7 @@ async function renderChoppyTimeline(plan, { style, caption, audioPath, tmpDir, l
   const finalEncode = videoBitrateK > 0
     ? `-b:v ${videoBitrateK}k -maxrate ${Math.round(videoBitrateK * 1.5)}k -bufsize ${videoBitrateK * 2}k -preset fast`
     : "-crf 18 -preset fast";
-  const scaleFilter = `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},fps=${fps}`;
+  const scaleFilter = buildScaleFilter(w, h, fps, stretch);
 
   // Stage 1: Extract each slice as a normalized mp4
   const slicePaths = [];
@@ -612,7 +620,7 @@ async function renderChoppyTimeline(plan, { style, caption, audioPath, tmpDir, l
 
 // ── Main export ─────────────────────────────────────────────────────────────
 
-async function editVideo({ images = [], videos = [], audioBuffer = null, preset = "short", style = "cinematic", caption = null, lyrics = false, lyricsStyle = "karaoke", resolution, customAr, autoAspect = false }) {
+async function editVideo({ images = [], videos = [], audioBuffer = null, preset = "short", style = "cinematic", caption = null, lyrics = false, lyricsStyle = "karaoke", resolution, customAr, autoAspect = false, stretch = false }) {
   let effectivePreset = preset;
 
   // Auto aspect ratio: detect source media orientation and switch preset if needed
@@ -721,8 +729,8 @@ async function editVideo({ images = [], videos = [], audioBuffer = null, preset 
     console.log(`[video-editor] timeline: ${plan.segments.length} segments, ${plan.totalDurationSec.toFixed(1)}s target=${presetCfg.targetSec}s${plan.choppy ? " (choppy)" : ""}`);
 
     const videoBuffer = plan.choppy
-      ? await renderChoppyTimeline(plan, { style, caption, audioPath, tmpDir, lyricsAssPath })
-      : await renderTimeline(plan, { style, caption, audioPath, tmpDir, lyricsAssPath });
+      ? await renderChoppyTimeline(plan, { style, caption, audioPath, tmpDir, lyricsAssPath, stretch })
+      : await renderTimeline(plan, { style, caption, audioPath, tmpDir, lyricsAssPath, stretch });
     const sizeMB = (videoBuffer.length / 1024 / 1024).toFixed(1);
     console.log(`[video-editor] render complete: ${sizeMB}MB`);
 

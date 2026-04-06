@@ -20,8 +20,15 @@ const CONTAINER_NAME = "nemoclaw-capcut-mate";
  * @returns {{ desktopPath: string, draftId: string }}
  */
 async function copyDraftToDesktop(draftUrl) {
-  // Extract draft ID from URL (last path segment)
-  const draftId = draftUrl.split("/").filter(Boolean).pop();
+  // Extract draft ID from URL — may be a query param (?draft_id=XXX) or last path segment
+  let draftId;
+  try {
+    const parsed = new URL(draftUrl, "http://localhost");
+    draftId = parsed.searchParams.get("draft_id");
+  } catch { /* not a valid URL */ }
+  if (!draftId) draftId = draftUrl.split("/").filter(Boolean).pop();
+  // Strip any remaining query string
+  if (draftId && draftId.includes("?")) draftId = draftId.split("?")[0];
   if (!draftId) throw new Error("Could not extract draft ID from URL");
 
   // Docker cp from container
@@ -105,27 +112,32 @@ async function triggerDesktopExport(opts = {}) {
 
   console.log("[capcut-export] triggering CapCut Desktop export via PowerShell...");
 
-  const psScript = `
-    $capcut = Get-Process -Name 'CapCut' -ErrorAction SilentlyContinue
-    if (-not $capcut) {
-      Start-Process '${CAPCUT_DESKTOP_EXE}'
-      Start-Sleep -Seconds 10
-    }
-    Add-Type -AssemblyName System.Windows.Forms
-    Start-Sleep -Seconds 3
-    [System.Windows.Forms.SendKeys]::SendWait('^e')
-    Start-Sleep -Seconds 2
-    [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
-  `.trim().replace(/\n/g, "; ");
+  // Write PS1 script to temp file to avoid bash/JS interpolation mangling $variables
+  const psPath = "/tmp/capcut-export.ps1";
+  const psScript = [
+    "$capcut = Get-Process -Name 'CapCut' -ErrorAction SilentlyContinue",
+    "if (-not $capcut) {",
+    `  Start-Process '${CAPCUT_DESKTOP_EXE}'`,
+    "  Start-Sleep -Seconds 10",
+    "}",
+    "Add-Type -AssemblyName System.Windows.Forms",
+    "Start-Sleep -Seconds 3",
+    "[System.Windows.Forms.SendKeys]::SendWait('^e')",
+    "Start-Sleep -Seconds 2",
+    "[System.Windows.Forms.SendKeys]::SendWait('{ENTER}')",
+  ].join("\n");
+  fs.writeFileSync(psPath, psScript);
 
   try {
-    execSync(`powershell.exe -Command "${psScript}"`, {
+    execSync(`powershell.exe -ExecutionPolicy Bypass -File "${psPath}"`, {
       timeout: exportTimeoutMs,
       stdio: "pipe",
     });
     return { success: true, message: "Export triggered — check CapCut Desktop" };
   } catch (e) {
     return { success: false, message: `Export trigger failed: ${e.message}` };
+  } finally {
+    try { fs.unlinkSync(psPath); } catch { /* cleanup */ }
   }
 }
 

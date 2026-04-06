@@ -30,7 +30,10 @@ function startFileServer(dir, opts = {}) {
     const filename = decodeURIComponent(req.url.replace(/^\//, "").split("?")[0]);
     const filePath = path.join(dir, path.basename(filename));
 
+    console.log(`[capcut-file-server] ${req.method} ${req.url} → ${path.basename(filePath)}`);
+
     if (!fs.existsSync(filePath)) {
+      console.log(`[capcut-file-server] 404: ${filePath}`);
       res.writeHead(404);
       res.end("Not found");
       return;
@@ -48,6 +51,7 @@ function startFileServer(dir, opts = {}) {
 
     // HEAD — return headers only (CapCut checks Content-Length via HEAD before downloading)
     if (req.method === "HEAD") {
+      console.log(`[capcut-file-server] HEAD → 200, Content-Length: ${stat.size}, Content-Type: ${mime}`);
       res.writeHead(200, headers);
       res.end();
       return;

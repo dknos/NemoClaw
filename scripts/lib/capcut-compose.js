@@ -396,7 +396,26 @@ async function prepareMedia(images, videos, audioBuffer, tmpDir) {
   let audioName = null;
   if (audioBuffer) {
     audioName = "audio.mp3";
-    fs.writeFileSync(path.join(tmpDir, audioName), audioBuffer);
+    const rawAudioPath = path.join(tmpDir, "audio_raw.mp3");
+    const finalAudioPath = path.join(tmpDir, audioName);
+    fs.writeFileSync(rawAudioPath, audioBuffer);
+    // Re-encode to ensure proper MP3 headers (pymediainfo in CapCut needs valid Xing/VBRI headers)
+    try {
+      const { findFfmpeg } = require("./ffmpeg-utils");
+      const ffmpeg = findFfmpeg();
+      if (ffmpeg) {
+        require("child_process").execSync(
+          `"${ffmpeg}" -y -i "${rawAudioPath}" -c:a libmp3lame -b:a 192k -write_xing 1 "${finalAudioPath}"`,
+          { timeout: 60000, stdio: ["pipe", "pipe", "pipe"] }
+        );
+        console.log("[capcut-compose] re-encoded audio with proper MP3 headers");
+      } else {
+        fs.copyFileSync(rawAudioPath, finalAudioPath);
+      }
+    } catch (e) {
+      console.warn("[capcut-compose] audio re-encode failed, using raw:", e.message);
+      fs.copyFileSync(rawAudioPath, finalAudioPath);
+    }
   }
 
   const fileServer = await startFileServer(tmpDir);
