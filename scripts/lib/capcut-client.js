@@ -17,7 +17,7 @@ async function capcutPost(endpoint, body) {
 
 // ── Draft lifecycle ─────────────────────────────────────────────────────────
 
-async function createDraft(width = 1920, height = 1080) {
+async function createDraft(width = 1280, height = 720) {
   const r = await capcutPost("/create_draft", { width, height });
   return { draftUrl: r.draft_url };
 }
@@ -155,8 +155,8 @@ async function createBeatSyncedDraft({
   audioPath,       // Local path to mp3 (for beat detection)
   videoUrls = [],  // Video clip URLs
   imageUrls = [],  // Image URLs
-  width = 1080,
-  height = 1920,
+  width = 720,
+  height = 1280,
   caption = null,
   transition = "fade_black",
   transitionDuration = 200000, // 0.2s in microseconds

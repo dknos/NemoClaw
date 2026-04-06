@@ -15,17 +15,8 @@ const FFMPEG_BIN = (() => {
 })();
 const FFPROBE_BIN = FFMPEG_BIN;
 
-// Bitrate targets: high quality but Discord-uploadable.
-// 25MB limit → target ~22MB with headroom. 22MB * 8000 / duration = kbps (minus ~192 audio)
-// All durations shaved 0.3s to avoid platform time limits (YT Shorts 60s, etc.)
-const PRESETS = {
-  short:          { w: 1080, h: 1920, targetSec: 14.7,  fps: 24, videoBitrateK: 10000 }, // 9:16, ~19MB
-  "short-long":   { w: 1080, h: 1920, targetSec: 59.7,  fps: 24, videoBitrateK: 2700 },  // 9:16, ~22MB
-  full:           { w: 1920, h: 1080, targetSec: 59.7,  fps: 24, videoBitrateK: 2700 },  // 16:9, ~22MB
-  "full-long":    { w: 1920, h: 1080, targetSec: 119.7, fps: 24, videoBitrateK: 1300 },  // 16:9, ~21MB
-  vertical:       { w: 1080, h: 1920, targetSec: 59.7,  fps: 24, videoBitrateK: 2700 },  // 9:16, ~22MB — alias
-  "vertical-long":{ w: 1080, h: 1920, targetSec: 119.7, fps: 24, videoBitrateK: 1300 },  // 9:16, ~21MB
-};
+// Presets imported from shared module — single source of truth for resolution + bitrate.
+const { resolvePreset, detectAspectRatio, adjustPresetForAspect, PRESETS } = require("./video-presets");
 
 const STYLE_FILTERS = {
   cinematic:  "curves=vintage,colorbalance=rs=-0.05:gs=0:bs=0.05:rm=0:gm=0:bm=0:rh=0.05:gh=0:bh=-0.05,eq=contrast=1.1:brightness=-0.02:saturation=0.85",
@@ -38,6 +29,7 @@ const STYLE_FILTERS = {
   clean:      "eq=contrast=1.02:brightness=0.01:saturation=1.05,unsharp=3:3:0.5",
   brainslop:  "eq=contrast=1.15:brightness=-0.01:saturation=1.2,unsharp=5:5:0.8",
   ludicrous:  "eq=contrast=1.25:saturation=1.5:brightness=0.02,noise=alls=8:allf=t",
+  "16bit-spiritual": "hue=s=0.6,eq=contrast=1.3:brightness=-0.03:saturation=0.65,noise=alls=12:allf=t,vignette=PI/3",
 };
 
 // ── Choppy style config ────────────────────────────────────────────────────
@@ -48,6 +40,7 @@ const STYLE_FILTERS = {
 const CHOPPY_STYLES = {
   brainslop: { bpm: 120, cutsPerMin: 45, minBeats: 1, maxBeats: 4 },   // beat-synced, 0.5-2s cuts
   ludicrous: { bpm: 120, cutsPerMin: 25, minBeats: 2, maxBeats: 8 },   // 20-30 cuts/min, varied lengths, some reversed
+  "16bit-spiritual": { bpm: 110, cutsPerMin: 50, minBeats: 1, maxBeats: 3 }, // rapid jumpcuts, 90s geocities feel
 };
 
 const EXEC_TIMEOUT = 300000; // 5 min per FFmpeg call (zoompan on big images is slow)
@@ -619,8 +612,31 @@ async function renderChoppyTimeline(plan, { style, caption, audioPath, tmpDir, l
 
 // ── Main export ─────────────────────────────────────────────────────────────
 
-async function editVideo({ images = [], videos = [], audioBuffer = null, preset = "short", style = "cinematic", caption = null, lyrics = false, lyricsStyle = "karaoke" }) {
-  const presetCfg = PRESETS[preset] || PRESETS.short;
+async function editVideo({ images = [], videos = [], audioBuffer = null, preset = "short", style = "cinematic", caption = null, lyrics = false, lyricsStyle = "karaoke", resolution, customAr, autoAspect = false }) {
+  let effectivePreset = preset;
+
+  // Auto aspect ratio: detect source media orientation and switch preset if needed
+  if (autoAspect && videos.length > 0) {
+    // Write video buffers to temp files for probing
+    const probeTmp = `/tmp/nemoclaw-probe-${Date.now()}`;
+    fs.mkdirSync(probeTmp, { recursive: true });
+    try {
+      const { getMediaDimensions } = require("./ffmpeg-utils");
+      const probePaths = videos.map((buf, i) => {
+        const p = `${probeTmp}/probe_${i}.mp4`;
+        fs.writeFileSync(p, buf);
+        return p;
+      });
+      const detected = detectAspectRatio(probePaths, getMediaDimensions);
+      if (detected) {
+        effectivePreset = adjustPresetForAspect(effectivePreset, detected);
+        if (effectivePreset !== preset) console.log(`[video-editor] auto-aspect: ${preset} → ${effectivePreset} (detected ${detected})`);
+      }
+    } catch (e) { console.warn(`[video-editor] auto-aspect detection failed:`, e.message); }
+    finally { try { fs.rmSync(probeTmp, { recursive: true, force: true }); } catch {} }
+  }
+
+  const presetCfg = resolvePreset(effectivePreset, resolution, customAr);
   const ts = Date.now();
   const tmpDir = `/tmp/nemoclaw-edit-${ts}`;
   fs.mkdirSync(tmpDir, { recursive: true });

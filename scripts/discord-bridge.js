@@ -1756,7 +1756,7 @@ async function composeVideoWithCapCutAPI({ videoPaths = [], style = "cinematic",
   const { videoBuffer } = await editVideo({
     images: [], videos, audioBuffer,
     preset: "short", style,
-    caption: textOverlay,
+    caption: textOverlay, autoAspect: true,
   });
   return videoBuffer;
 }
@@ -1764,17 +1764,8 @@ async function composeVideoWithCapCutAPI({ videoPaths = [], style = "cinematic",
 // ── Candy's Video Composition Engine (FFmpeg fallback) ────────────────────────
 // Fully local, no external accounts. Concat + transitions + color + text + music.
 
-const FFMPEG_BIN = (() => {
-  const candidates = [
-    "/home/nemoclaw/.local/bin/ffmpeg",
-    "/usr/local/bin/ffmpeg",
-    "/usr/bin/ffmpeg",
-  ];
-  for (const p of candidates) { try { if (fs.existsSync(p)) return p; } catch {} }
-  return "ffmpeg";
-})();
-
-const FFPROBE_BIN = FFMPEG_BIN.replace(/ffmpeg$/, "ffprobe");
+// ── ffmpeg/ffprobe discovery — imported from shared util ─────────
+const { findFfmpeg, findFfprobe, getMediaDuration } = require("./lib/ffmpeg-utils");
 
 const STYLE_FFMPEG_FILTERS = {
   cinematic: "curves=vintage,colorbalance=rs=-0.05:gs=0:bs=0.05:rm=0:gm=0:bm=0:rh=0.05:gh=0:bh=-0.05,eq=contrast=1.1:brightness=-0.02:saturation=0.85",
@@ -1787,10 +1778,13 @@ const STYLE_FFMPEG_FILTERS = {
   dreamy:    "gblur=sigma=0.8,eq=contrast=0.95:brightness=0.03:saturation=1.1,curves=lighter",
   dark:      "curves=darker,eq=contrast=1.3:brightness=-0.05:saturation=0.8",
   bright:    "eq=contrast=1.0:brightness=0.06:saturation=1.15,curves=lighter",
+  "16bit-spiritual": "hue=s=0.6,eq=contrast=1.3:brightness=-0.03:saturation=0.65,noise=alls=12:allf=t,vignette=PI/3",
 };
 
-async function composeVideoWithFFmpeg({ videoPaths = [], style = "cinematic", textOverlay = null, musicPath = null, width = 1080, height = 1920 }) {
+async function composeVideoWithFFmpeg({ videoPaths = [], style = "cinematic", textOverlay = null, musicPath = null, width = 720, height = 1280 }) {
   const { execSync } = require("child_process");
+  const ffmpeg = findFfmpeg();
+  if (!ffmpeg) throw new Error("ffmpeg not found");
   const ts = Date.now();
   const tmpDir = `/tmp/candy-compose-${ts}`;
   fs.mkdirSync(tmpDir, { recursive: true });
@@ -1803,7 +1797,7 @@ async function composeVideoWithFFmpeg({ videoPaths = [], style = "cinematic", te
     for (let i = 0; i < videoPaths.length; i++) {
       const out = `${tmpDir}/norm_${i}.mp4`;
       const scaleFilter = `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},fps=30,${colorFilter}`;
-      execSync(`"${FFMPEG_BIN}" -y -i "${videoPaths[i]}" -vf "${scaleFilter}" -c:v libx264 -preset fast -crf 18 -an "${out}"`, { timeout: 120000 });
+      execSync(`"${ffmpeg}" -y -i "${videoPaths[i]}" -vf "${scaleFilter}" -c:v libx264 -preset fast -crf 18 -an "${out}"`, { timeout: 120000 });
       normalizedPaths.push(out);
       console.log(`[candy-compose] normalized clip ${i + 1}/${videoPaths.length}`);
     }
@@ -1815,14 +1809,7 @@ async function composeVideoWithFFmpeg({ videoPaths = [], style = "cinematic", te
       // Concat with xfade dissolve transitions
       composedPath = `${tmpDir}/composed.mp4`;
       const fadeDur = 0.5;
-      const durations = normalizedPaths.map(p => {
-        try {
-          const out = execSync(`"${FFMPEG_BIN}" -i "${p}" 2>&1 || true`, { encoding: "utf-8", timeout: 10000 });
-          const dm = out.match(/Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/);
-          if (dm) return parseInt(dm[1]) * 3600 + parseInt(dm[2]) * 60 + parseInt(dm[3]) + parseInt(dm[4]) / 100;
-          return 6;
-        } catch { return 6; }
-      });
+      const durations = normalizedPaths.map(p => getMediaDuration(p) || 6);
       const inputs = normalizedPaths.map(p => `-i "${p}"`).join(" ");
       let filterComplex = "";
       let prevLabel = "[0:v]";
@@ -1833,7 +1820,7 @@ async function composeVideoWithFFmpeg({ videoPaths = [], style = "cinematic", te
         prevLabel = nextLabel;
         offset += durations[i] - fadeDur;
       }
-      execSync(`"${FFMPEG_BIN}" -y ${inputs} -filter_complex "${filterComplex.replace(/;$/, "")}" -map "[vout]" -c:v libx264 -preset fast -crf 18 "${composedPath}"`, { timeout: 300000 });
+      execSync(`"${ffmpeg}" -y ${inputs} -filter_complex "${filterComplex.replace(/;$/, "")}" -map "[vout]" -c:v libx264 -preset fast -crf 18 "${composedPath}"`, { timeout: 300000 });
       console.log(`[candy-compose] ${normalizedPaths.length} clips xfade-composed`);
     }
 
@@ -1843,14 +1830,14 @@ async function composeVideoWithFFmpeg({ videoPaths = [], style = "cinematic", te
       withTextPath = `${tmpDir}/withtext.mp4`;
       const safeText = textOverlay.replace(/[':]/g, " ").slice(0, 100);
       const textFilter = `drawtext=text='${safeText}':fontsize=52:fontcolor=white:borderw=3:bordercolor=black@0.8:x=(w-text_w)/2:y=h*0.85:enable='between(t,0,4)'`;
-      execSync(`"${FFMPEG_BIN}" -y -i "${composedPath}" -vf "${textFilter}" -c:v libx264 -preset fast -crf 18 -an "${withTextPath}"`, { timeout: 120000 });
+      execSync(`"${ffmpeg}" -y -i "${composedPath}" -vf "${textFilter}" -c:v libx264 -preset fast -crf 18 -an "${withTextPath}"`, { timeout: 120000 });
       console.log(`[candy-compose] text overlay added`);
     }
 
     // Mix in music at 35% volume if provided
     const outputPath = `${tmpDir}/final.mp4`;
     if (musicPath && fs.existsSync(musicPath)) {
-      execSync(`"${FFMPEG_BIN}" -y -i "${withTextPath}" -i "${musicPath}" -filter_complex "[1:a]volume=0.35,apad[music]" -map 0:v -map "[music]" -shortest -c:v copy -c:a aac "${outputPath}"`, { timeout: 120000 });
+      execSync(`"${ffmpeg}" -y -i "${withTextPath}" -i "${musicPath}" -filter_complex "[1:a]volume=0.35,apad[music]" -map 0:v -map "[music]" -shortest -c:v copy -c:a aac "${outputPath}"`, { timeout: 120000 });
       console.log(`[candy-compose] music mixed`);
     } else {
       fs.copyFileSync(withTextPath, outputPath);
@@ -1909,16 +1896,12 @@ async function extractLastFrameFromVideo(videoBuf) {
   fs.writeFileSync(tmpIn, videoBuf);
   try {
     const { execSync } = require("child_process");
-    // Get duration via ffmpeg -i (no separate ffprobe binary)
-    let duration = "5";
-    try {
-      const probeOut = execSync(`"${FFMPEG_BIN}" -i "${tmpIn}" 2>&1 || true`, { encoding: "utf-8", timeout: 15000 });
-      const dm = probeOut.match(/Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/);
-      if (dm) duration = String(parseInt(dm[1]) * 3600 + parseInt(dm[2]) * 60 + parseInt(dm[3]) + parseInt(dm[4]) / 100);
-    } catch (e) { console.warn(`[chain] duration probe failed: ${e.message}`); }
-    const lastSec = Math.max(0, parseFloat(duration) - 0.1);
+    const ffmpeg = findFfmpeg();
+    if (!ffmpeg) throw new Error("ffmpeg not found");
+    const dur = getMediaDuration(tmpIn);
+    const lastSec = Math.max(0, (dur || 5) - 0.1);
     console.log(`[chain] extracting last frame at ${lastSec}s from ${(videoBuf.length / 1024).toFixed(0)}KB video`);
-    execSync(`"${FFMPEG_BIN}" -y -ss ${lastSec} -i "${tmpIn}" -frames:v 1 -q:v 2 "${tmpOut}"`, { timeout: 20000, stdio: ["pipe", "pipe", "pipe"] });
+    execSync(`"${ffmpeg}" -y -ss ${lastSec} -i "${tmpIn}" -frames:v 1 -q:v 2 "${tmpOut}"`, { timeout: 20000, stdio: ["pipe", "pipe", "pipe"] });
     const frameBuf = fs.readFileSync(tmpOut);
     console.log(`[chain] extracted last frame (${frameBuf.length} bytes) at ${lastSec}s`);
     return frameBuf;
@@ -1934,20 +1917,7 @@ async function extractLastFrameFromVideo(videoBuf) {
 
 const storySegments = new Map(); // msgId → [Buffer, Buffer, ...]
 
-function findFfmpeg() {
-  const { execSync } = require("child_process");
-  try { execSync("which ffmpeg", { encoding: "utf-8", timeout: 3000 }); return "ffmpeg"; } catch {}
-  // Return UNQUOTED paths — execFileSync handles spaces natively, shell quotes cause ENOENT
-  const paths = [
-    "/mnt/c/Program Files/Shotcut/ffmpeg.exe",
-    "/mnt/c/Program Files/SVP 4/utils/ffmpeg.exe",
-    "/mnt/c/Program Files/Krita (x64)/bin/ffmpeg.exe",
-  ];
-  for (const p of paths) {
-    try { execSync(`"${p}" -version`, { encoding: "utf-8", timeout: 5000 }); return p; } catch {}
-  }
-  return null;
-}
+// findFfmpeg() imported from ./lib/ffmpeg-utils
 
 function addSegment(msgId, videoBuf) {
   if (!storySegments.has(msgId)) storySegments.set(msgId, []);
@@ -2227,6 +2197,21 @@ print(len(indices))
     try { fs.unlinkSync(tmpIn); } catch {}
     try { fs.rmSync(tmpOut, { recursive: true }); } catch {}
   }
+}
+
+// getMediaDuration() imported from ./lib/ffmpeg-utils — returns null on failure, not 0
+
+// Parse timestamps like "10s", "1:30", "0:01:15", "90", "1:15.5"
+function parseTimestamp(str) {
+  if (!str || str === "0") return 0;
+  const s = str.trim().toLowerCase().replace(/s$/, "");
+  // Plain number (seconds)
+  if (/^\d+(\.\d+)?$/.test(s)) return parseFloat(s);
+  // M:SS or H:MM:SS
+  const parts = s.split(":").map(Number);
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return parseFloat(s) || 0;
 }
 
 function fetchBuffer(url) {
@@ -3595,6 +3580,8 @@ client.on("interactionCreate", async (interaction) => {
                 { label: "First/Last Frame",    value: "combi",        description: "Animate between two images",                      emoji: "🎞️" },
                 { label: "Story Video",         value: "story",        description: "Multi-segment narrative video (20-40s)",           emoji: "📖" },
                 { label: "Grok img2vid",        value: "grok_img2vid", description: "Animate an image with Grok Aurora",               emoji: "🌀" },
+                { label: "Trim Video",          value: "trim",         description: "Cut a clip (e.g. 10s to end)",                     emoji: "✂️" },
+                { label: "Video to GIF",        value: "gif",          description: "Convert a video clip to animated GIF",             emoji: "🎞️" },
               ])
           );
           await interaction.update({ content: "🎬 **Video** — pick a model:", components: [row] });
@@ -3604,11 +3591,11 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId("create_edit_preset")
               .setPlaceholder("Choose video format…")
               .addOptions([
-                { label: "Short (14s, 9:16)",          value: "short",         description: "YouTube Short / TikTok / Reel",        emoji: "📱" },
-                { label: "Vertical (60s, 9:16)",       value: "vertical",      description: "60s vertical video",                   emoji: "📱" },
-                { label: "Vertical Long (120s, 9:16)", value: "vertical-long", description: "2-min vertical video",                 emoji: "📱" },
-                { label: "Full (60s, 16:9)",           value: "full",          description: "Standard landscape video",              emoji: "🖥️" },
-                { label: "Long (120s, 16:9)",          value: "full-long",     description: "2-min landscape video",                 emoji: "🖥️" },
+                { label: "Short (14s, 9:16, 720p)",          value: "short",         description: "YouTube Short / TikTok / Reel",        emoji: "📱" },
+                { label: "Vertical (60s, 9:16, 720p)",       value: "vertical",      description: "60s vertical video",                   emoji: "📱" },
+                { label: "Vertical Long (120s, 9:16, 720p)", value: "vertical-long", description: "2-min vertical video",                 emoji: "📱" },
+                { label: "Full (60s, 16:9, 720p)",           value: "full",          description: "Standard landscape video",              emoji: "🖥️" },
+                { label: "Long (120s, 16:9, 720p)",          value: "full-long",     description: "2-min landscape video",                 emoji: "🖥️" },
               ])
           );
           await interaction.update({ content: "✂️ **Edit** — pick a format:", components: [row1] });
@@ -3635,14 +3622,22 @@ client.on("interactionCreate", async (interaction) => {
             .setCustomId(`create_edit_style:${preset}`)
             .setPlaceholder("Choose a visual style…")
             .addOptions([
-              { label: "Cinematic",  value: "cinematic",  emoji: "🎬" },
-              { label: "Vibrant",    value: "vibrant",    emoji: "🌈" },
-              { label: "Moody",      value: "moody",      emoji: "🌙" },
-              { label: "Vintage",    value: "vintage",    emoji: "📼" },
-              { label: "Dark",       value: "dark",       emoji: "🖤" },
-              { label: "Dreamy",     value: "dreamy",     emoji: "☁" },
-              { label: "Brainslop",  value: "brainslop",  emoji: "🧠", description: "Jumpcuts, beat-synced chaos" },
-              { label: "Ludicrous",  value: "ludicrous",  emoji: "🔥", description: "Pure rapid-fire brain slop" },
+              { label: "Cinematic",     value: "cinematic",     emoji: "🎬" },
+              { label: "Vibrant",       value: "vibrant",       emoji: "🌈" },
+              { label: "Moody",         value: "moody",         emoji: "🌙" },
+              { label: "Vintage",       value: "vintage",       emoji: "📼" },
+              { label: "Dark",          value: "dark",          emoji: "🖤" },
+              { label: "Dreamy",        value: "dreamy",        emoji: "☁" },
+              { label: "Brainslop",     value: "brainslop",     emoji: "🧠", description: "Jumpcuts, beat-synced chaos" },
+              { label: "Ludicrous",     value: "ludicrous",     emoji: "🔥", description: "Pure rapid-fire brain slop" },
+              { label: "Glitchpunk",    value: "glitchpunk",    emoji: "👾", description: "RGB glitch, pixel shake, static" },
+              { label: "Neon Dream",    value: "neondream",     emoji: "💜", description: "Neon glow, sparkle, fairy dust" },
+              { label: "Weather Witch", value: "weatherwitch",  emoji: "🌧️", description: "Rain, fog, leaves, snow, meteors" },
+              { label: "Retro Future",  value: "retrofuture",   emoji: "📟", description: "DV cam, VCR, film burn, 90s" },
+              { label: "Motion Sick",   value: "motionsick",    emoji: "🌀", description: "Zoom blur, shake, rush" },
+              { label: "Animecore",     value: "animecore",     emoji: "⚡", description: "Manga, speed lines, color pop" },
+              { label: "Golden Hour",   value: "goldenhour",    emoji: "🌅", description: "Sun rays, light leaks, film grain" },
+              { label: "Split Reality", value: "splitreality",  emoji: "🪞", description: "Multi-screen, RGB, glitch" },
             ])
         );
         await interaction.update({ content: `✂️ **Edit** *(${preset})* — pick a style:`, components: [row] });
@@ -3792,6 +3787,20 @@ client.on("interactionCreate", async (interaction) => {
         if (model === "grok_img2vid") {
           await interaction.update({
             content: "📎 Use **/grok-img2vid** to upload your source image along with a prompt.",
+            components: [],
+          });
+          return;
+        }
+        if (model === "trim") {
+          await interaction.update({
+            content: "✂️ **Trim Video**\n\nUse **/trim** and attach your video, or:\n• `!trim 10s-end` — trim from 10s to end\n• `!trim 0:30-1:15` — extract 30s to 1:15\n• `!trim 14s` — trim last video from 14s to end\n\nAttach a file or it'll trim the last generated video.",
+            components: [],
+          });
+          return;
+        }
+        if (model === "gif") {
+          await interaction.update({
+            content: "🎞️ **Video to GIF**\n\nSend `!gif` with a video attached, or:\n• `!gif` — convert last generated video\n• `!gif 5s` — only first 5 seconds\n• `!gif 3s-8s` — extract 3s to 8s as GIF",
             components: [],
           });
           return;
@@ -4717,7 +4726,7 @@ client.on("interactionCreate", async (interaction) => {
         fs.writeFileSync(tmpVid, videoBuf);
         addSegment(interaction.id, videoBuf);
         generationContext.set(interaction.id, { prompt, videoBuf, type: "video", rootId: interaction.id });
-        const DISCORD_LIMIT = 8 * 1024 * 1024;
+        const DISCORD_LIMIT = 25 * 1024 * 1024;
         if (videoBuf.length > DISCORD_LIMIT) {
           let videoUrl;
           try {
@@ -4885,8 +4894,8 @@ client.on("interactionCreate", async (interaction) => {
         fs.writeFileSync(tmpAud, audBuf);
 
         const { execSync } = require("child_process");
-        let ffmpeg = "/home/nemoclaw/.local/bin/ffmpeg";
-        try { execSync("which ffmpeg", { encoding: "utf-8", timeout: 3000 }); ffmpeg = "ffmpeg"; } catch {}
+        const ffmpeg = findFfmpeg();
+        if (!ffmpeg) throw new Error("ffmpeg not found");
 
         // -stream_loop -1 loops audio so it always covers the full video length
         // -shortest cuts output to whichever stream ends first (video length wins)
@@ -4909,6 +4918,64 @@ client.on("interactionCreate", async (interaction) => {
       } catch (e) {
         console.error(`[combine] failed: ${e.message}`);
         await interaction.editReply(`⚠️ Combine failed: ${e.message.slice(0, 200)}`);
+      }
+      return;
+    }
+
+    // /trim — trim a video or audio clip
+    if (cmd === "trim") {
+      const fileAtt = interaction.options.getAttachment("file");
+      const startStr = interaction.options.getString("start") || "0";
+      const endStr   = interaction.options.getString("end") || "end";
+      await interaction.deferReply();
+      try {
+        const ts  = Date.now();
+        const ext = (fileAtt.name || "file.mp4").match(/\.\w+$/)?.[0] || ".mp4";
+        const isAudio = /\.(mp3|wav|ogg|flac|m4a|aac)$/i.test(ext);
+        const tmpIn  = `/tmp/trim-in-${ts}${ext}`;
+        const outExt = isAudio ? ext : ".mp4";
+        const tmpOut = `/tmp/trim-out-${ts}${outExt}`;
+
+        const fileBuf = await fetchBuffer(fileAtt.url);
+        fs.writeFileSync(tmpIn, fileBuf);
+
+        const { execSync } = require("child_process");
+        const ffmpeg = findFfmpeg();
+        if (!ffmpeg) throw new Error("ffmpeg not found");
+
+        const startSec = parseTimestamp(startStr);
+        const totalDur = getMediaDuration(tmpIn);
+        const wantsEnd = (endStr === "end" || endStr === "");
+        if (wantsEnd && totalDur === null) throw new Error("Could not detect media duration — try specifying end time manually (e.g. /trim start:10s end:30s)");
+        const endSec = wantsEnd ? totalDur : parseTimestamp(endStr);
+
+        if (startSec >= endSec) throw new Error(`Start (${startSec}s) must be before end (${endSec}s)`);
+
+        const duration = endSec - startSec;
+        execSync(
+          `"${ffmpeg}" -y -ss ${startSec} -i "${tmpIn}" -t ${duration} -c copy "${tmpOut}"`,
+          { timeout: 120000 }
+        );
+
+        const outBuf = fs.readFileSync(tmpOut);
+        const outName = (fileAtt.name || "trimmed").replace(/\.\w+$/, "") + `-trimmed${outExt}`;
+        [tmpIn, tmpOut].forEach(f => { try { fs.unlinkSync(f); } catch { /* cleanup */ } });
+
+        const sizeMB = (outBuf.length / 1024 / 1024).toFixed(1);
+        await interaction.editReply({
+          content: `✂️ **Trimmed** — ${startSec.toFixed(1)}s → ${endSec.toFixed(1)}s (${duration.toFixed(1)}s, ${sizeMB}MB)`,
+          files: [new AttachmentBuilder(outBuf, { name: outName })],
+        });
+
+        if (isAudio) {
+          generationContext.set(interaction.id, { type: "music", audioBuf: outBuf, prompt: `trimmed ${fileAtt.name}` });
+        } else {
+          lastVideoBuffer = outBuf; lastVideoSetAt = Date.now(); lastVideoMime = "video/mp4";
+          generationContext.set(interaction.id, { type: "video", videoBuf: outBuf, prompt: `trimmed ${fileAtt.name}` });
+        }
+      } catch (e) {
+        console.error("[trim] failed:", e.message);
+        await interaction.editReply(`❌ Trim failed: ${e.message.slice(0, 300)}`);
       }
       return;
     }
@@ -5120,8 +5187,10 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
       const preset = interaction.options.getString("preset") || "short";
+      const userPickedPreset = !!interaction.options.getString("preset");
       const style = interaction.options.getString("style") || "cinematic";
       const caption = interaction.options.getString("caption") || null;
+      const customAr = interaction.options.getString("aspect") || undefined;
       await interaction.deferReply();
 
       const images = [...q.images];
@@ -5134,7 +5203,7 @@ client.on("interactionCreate", async (interaction) => {
 
       try {
         const { editVideo } = require("./lib/video-editor");
-        const result = await editVideo({ images, videos, audioBuffer: audios[0] || null, preset, style, caption });
+        const result = await editVideo({ images, videos, audioBuffer: audios[0] || null, preset, style, caption, customAr, autoAspect: !userPickedPreset && !customAr });
         const tmpOut = `/tmp/edit-queue-${Date.now()}.mp4`;
         fs.writeFileSync(tmpOut, result.videoBuffer);
         const sizeMB = (result.videoBuffer.length / 1024 / 1024).toFixed(1);
@@ -5159,8 +5228,10 @@ client.on("interactionCreate", async (interaction) => {
     if (cmd === "edit") {
       await interaction.deferReply();
       const preset  = interaction.options.getString("preset") || "short";
+      const userPickedPreset = !!interaction.options.getString("preset");
       const style   = interaction.options.getString("style") || "cinematic";
       const caption = interaction.options.getString("caption") || null;
+      const customAr = interaction.options.getString("aspect") || undefined; // e.g. "4:3", "1:1"
       const lyricsOpt = interaction.options.getString("lyrics") || "off";
       const lyrics = lyricsOpt !== "off";
       const lyricsStyle = lyrics ? lyricsOpt : "karaoke";
@@ -5195,17 +5266,18 @@ client.on("interactionCreate", async (interaction) => {
 
       const features = [
         images.length && `${images.length} img`, videos.length && `${videos.length} vid`, audios.length && `🎵`,
-        lyrics && `📝 ${lyricsStyle}`, beattrack && `🥁 beat-sync`,
+        lyrics && `📝 ${lyricsStyle}`, beattrack && `🥁 beat-sync`, customAr && `📐 ${customAr}`,
       ].filter(Boolean).join(" + ");
       await interaction.editReply(`🎬 Composing **${preset}** video *(${style})* — ${features}...${lyrics ? "\n⏳ Transcribing lyrics with Whisper..." : ""}`);
 
       try {
         const { editVideo } = require("./lib/video-editor");
         // Force choppy style if beattrack requested (brainslop is the default beat-synced style)
-        const effectiveStyle = beattrack && !["brainslop", "ludicrous"].includes(style) ? "brainslop" : style;
+        const effectiveStyle = beattrack && !["brainslop", "ludicrous", "glitchpunk", "motionsick", "splitreality", "16bit-spiritual"].includes(style) ? "brainslop" : style;
         const result = await editVideo({
           images, videos, audioBuffer: audios[0] || null,
           preset, style: effectiveStyle, caption, lyrics, lyricsStyle,
+          customAr, autoAspect: !userPickedPreset && !customAr,
         });
 
         const tmpOut = `/tmp/edit-out-${Date.now()}.mp4`;
@@ -5236,6 +5308,7 @@ client.on("interactionCreate", async (interaction) => {
       const preset  = interaction.options.getString("preset") || "short";
       const style   = interaction.options.getString("style") || "cinematic";
       const caption = interaction.options.getString("caption") || null;
+      const customAr = interaction.options.getString("aspect") || undefined;
       const lyricsOpt = interaction.options.getString("lyrics") || "off";
       const lyrics = lyricsOpt !== "off";
       const lyricsStyle = lyrics ? lyricsOpt : "karaoke";
@@ -5277,10 +5350,10 @@ client.on("interactionCreate", async (interaction) => {
 
       try {
         const { capcutCompose, cleanupCompose } = require("./lib/capcut-compose");
-        const effectiveStyle = beattrack && !["brainslop", "ludicrous"].includes(style) ? "brainslop" : style;
+        const effectiveStyle = beattrack && !["brainslop", "ludicrous", "glitchpunk", "motionsick", "splitreality", "16bit-spiritual"].includes(style) ? "brainslop" : style;
         const result = await capcutCompose({
           images, videos, audioBuffer: audios[0] || null,
-          preset, style: effectiveStyle, caption, lyrics, lyricsStyle, beattrack,
+          preset, style: effectiveStyle, caption, lyrics, lyricsStyle, beattrack, customAr,
         });
 
         const info = [
@@ -5478,19 +5551,21 @@ client.on("messageCreate", async (msg) => {
   if (msg.content && msg.content.toLowerCase().startsWith("!edit") && !isClaudeQuery) {
     const args = msg.content.slice(5).trim().split(/\s+/);
     const PRESET_NAMES = ["short", "short-long", "full", "full-long", "vertical", "vertical-long"];
-    const STYLE_NAMES = ["cinematic", "vibrant", "moody", "vintage", "dark", "dreamy", "bright", "clean", "brainslop", "ludicrous"];
+    const STYLE_NAMES = ["cinematic", "vibrant", "moody", "vintage", "dark", "dreamy", "bright", "clean", "brainslop", "ludicrous", "glitchpunk", "neondream", "weatherwitch", "retrofuture", "motionsick", "animecore", "goldenhour", "splitreality", "16bit-spiritual"];
     const LYRICS_STYLES = ["karaoke", "subtitles", "viral"];
     let preset = "short", style = "cinematic", captionParts = [], lyrics = false, lyricsStyle = "karaoke", beattrack = false;
+    let userPickedPreset = false, customAr = undefined;
     for (const arg of args) {
       const lower = arg.toLowerCase();
-      if (PRESET_NAMES.includes(lower)) preset = lower;
+      if (PRESET_NAMES.includes(lower)) { preset = lower; userPickedPreset = true; }
       else if (STYLE_NAMES.includes(lower)) style = lower;
       else if (lower === "lyrics" || lower === "lyric") lyrics = true;
       else if (LYRICS_STYLES.includes(lower)) { lyrics = true; lyricsStyle = lower; }
       else if (lower === "beattrack" || lower === "beat" || lower === "beats") beattrack = true;
+      else if (/^\d+:\d+$/.test(lower)) customAr = lower;  // Custom aspect ratio (e.g. 4:3, 1:1, 21:9)
       else captionParts.push(arg);
     }
-    if (beattrack && !["brainslop", "ludicrous"].includes(style)) style = "brainslop";
+    if (beattrack && !["brainslop", "ludicrous", "glitchpunk", "motionsick", "splitreality", "16bit-spiritual"].includes(style)) style = "brainslop";
     const caption = captionParts.join(" ") || null;
 
     const images = [], videos = [], audios = [];
@@ -5535,12 +5610,12 @@ client.on("messageCreate", async (msg) => {
 
     try {
       const { editVideo } = require("./lib/video-editor");
-      const result = await editVideo({ images, videos, audioBuffer: audios[0] || null, preset, style, caption, lyrics, lyricsStyle });
+      const result = await editVideo({ images, videos, audioBuffer: audios[0] || null, preset, style, caption, lyrics, lyricsStyle, customAr, autoAspect: !userPickedPreset && !customAr });
       const tmpOut = `/tmp/edit-msg-${Date.now()}.mp4`;
       fs.writeFileSync(tmpOut, result.videoBuffer);
       const sizeMB = (result.videoBuffer.length / 1024 / 1024).toFixed(1);
       const durStr = result.totalDurationSec.toFixed(1);
-      const DISCORD_LIMIT = 8 * 1024 * 1024;
+      const DISCORD_LIMIT = 25 * 1024 * 1024;
       if (result.videoBuffer.length > DISCORD_LIMIT) {
         let videoUrl;
         try {
@@ -5576,14 +5651,170 @@ client.on("messageCreate", async (msg) => {
     return;
   }
 
+  // ── !trim message command — trim video/audio clips ────────���─────────────────
+  if (msg.content && msg.content.toLowerCase().startsWith("!trim") && !isClaudeQuery) {
+    const args = msg.content.slice(5).trim().split(/\s+/);
+    // Parse: !trim 10s end  OR  !trim 10s-end  OR  !trim 0:30 1:15  OR  !trim 14s
+    let startStr = "0", endStr = "end";
+    if (args.length >= 2 && !args[0].includes("-")) {
+      startStr = args[0]; endStr = args[1];
+    } else if (args.length >= 1 && args[0].includes("-")) {
+      const parts = args[0].split("-");
+      startStr = parts[0]; endStr = parts[1] || "end";
+    } else if (args.length === 1) {
+      startStr = args[0];
+    }
+
+    const att = msg.attachments.first();
+    if (!att) {
+      // Try last generated video
+      if (!lastVideoBuffer) { await msg.reply("❌ Attach a file or generate a video first."); return; }
+      const tmpIn = `/tmp/trim-in-${Date.now()}.mp4`;
+      const tmpOut = `/tmp/trim-out-${Date.now()}.mp4`;
+      fs.writeFileSync(tmpIn, lastVideoBuffer);
+      const progressMsg = await msg.reply(`✂️ Trimming last video: ${startStr} → ${endStr}...`);
+      try {
+        const { execSync } = require("child_process");
+        const ffmpeg = findFfmpeg();
+        if (!ffmpeg) throw new Error("ffmpeg not found");
+        const startSec = parseTimestamp(startStr);
+        const totalDur = getMediaDuration(tmpIn);
+        const wantsEnd = (endStr === "end" || endStr === "");
+        if (wantsEnd && totalDur === null) throw new Error("Could not detect media duration — try specifying it manually with !trim 0s-30s");
+        const endSec = wantsEnd ? totalDur : parseTimestamp(endStr);
+        const duration = endSec - startSec;
+        if (startSec >= endSec) throw new Error(`Start (${startSec}s) >= end (${endSec}s)`);
+        execSync(`"${ffmpeg}" -y -ss ${startSec} -i "${tmpIn}" -t ${duration} -c copy "${tmpOut}"`, { timeout: 120000 });
+        const outBuf = fs.readFileSync(tmpOut);
+        const sizeMB = (outBuf.length / 1024 / 1024).toFixed(1);
+        await progressMsg.edit({ content: `✂️ **Trimmed** — ${startSec.toFixed(1)}s → ${endSec.toFixed(1)}s (${duration.toFixed(1)}s, ${sizeMB}MB)`, files: [new AttachmentBuilder(tmpOut, { name: "trimmed.mp4" })] });
+        lastVideoBuffer = outBuf; lastVideoSetAt = Date.now(); lastVideoMime = "video/mp4";
+        generationContext.set(progressMsg.id, { type: "video", videoBuf: outBuf, prompt: "trimmed video" });
+      } catch (e) {
+        console.error("[!trim]", e.message);
+        await progressMsg.edit(`❌ Trim failed: ${e.message.slice(0, 300)}`);
+      }
+      [tmpIn, tmpOut].forEach(f => { try { fs.unlinkSync(f); } catch { /* cleanup */ } });
+      return;
+    }
+
+    // Has attachment — trim the attached file
+    const progressMsg = await msg.reply(`✂️ Trimming: ${startStr} → ${endStr}...`);
+    try {
+      const fileBuf = await fetchBuffer(att.url);
+      const ext = (att.name || "file.mp4").match(/\.\w+$/)?.[0] || ".mp4";
+      const isAudio = /\.(mp3|wav|ogg|flac|m4a|aac)$/i.test(ext);
+      const tmpIn = `/tmp/trim-in-${Date.now()}${ext}`;
+      const outExt = isAudio ? ext : ".mp4";
+      const tmpOut = `/tmp/trim-out-${Date.now()}${outExt}`;
+      fs.writeFileSync(tmpIn, fileBuf);
+
+      const { execSync } = require("child_process");
+      const ffmpeg = findFfmpeg();
+      if (!ffmpeg) throw new Error("ffmpeg not found");
+
+      const startSec = parseTimestamp(startStr);
+      const totalDur = getMediaDuration(tmpIn);
+      const wantsEnd = (endStr === "end" || endStr === "");
+      if (wantsEnd && totalDur === null) throw new Error("Could not detect media duration — try specifying it manually with !trim 0s-30s");
+      const endSec = wantsEnd ? totalDur : parseTimestamp(endStr);
+      const duration = endSec - startSec;
+      if (startSec >= endSec) throw new Error(`Start (${startSec}s) >= end (${endSec}s)`);
+
+      execSync(`"${ffmpeg}" -y -ss ${startSec} -i "${tmpIn}" -t ${duration} -c copy "${tmpOut}"`, { timeout: 120000 });
+      const outBuf = fs.readFileSync(tmpOut);
+      const sizeMB = (outBuf.length / 1024 / 1024).toFixed(1);
+      const outName = (att.name || "trimmed").replace(/\.\w+$/, "") + `-trimmed${outExt}`;
+      await progressMsg.edit({ content: `✂️ **Trimmed** — ${startSec.toFixed(1)}s → ${endSec.toFixed(1)}s (${duration.toFixed(1)}s, ${sizeMB}MB)`, files: [new AttachmentBuilder(tmpOut, { name: outName })] });
+
+      if (isAudio) {
+        generationContext.set(progressMsg.id, { type: "music", audioBuf: outBuf, prompt: `trimmed ${att.name}` });
+      } else {
+        lastVideoBuffer = outBuf; lastVideoSetAt = Date.now(); lastVideoMime = "video/mp4";
+        generationContext.set(progressMsg.id, { type: "video", videoBuf: outBuf, prompt: `trimmed ${att.name}` });
+      }
+      [tmpIn, tmpOut].forEach(f => { try { fs.unlinkSync(f); } catch { /* cleanup */ } });
+    } catch (e) {
+      console.error("[!trim]", e.message);
+      await progressMsg.edit(`❌ Trim failed: ${e.message.slice(0, 300)}`);
+    }
+    return;
+  }
+
+  // ── !gif message command — convert video to GIF ────────────────────────────
+  if (msg.content && msg.content.toLowerCase().startsWith("!gif") && !isClaudeQuery) {
+    const args = msg.content.slice(4).trim().split(/\s+/).filter(Boolean);
+    let startSec = 0, durSec = 4;
+    if (args.length >= 1 && args[0].includes("-")) {
+      const parts = args[0].split("-");
+      startSec = parseTimestamp(parts[0]);
+      const endSec = parts[1] === "end" ? 999 : parseTimestamp(parts[1] || "0");
+      durSec = Math.max(1, endSec - startSec);
+    } else if (args.length >= 1) {
+      durSec = parseTimestamp(args[0]);
+    }
+    durSec = Math.min(durSec, 30); // cap at 30s
+
+    // Get video from attachment, reply, or last generated
+    let videoBuf = null;
+    for (const [, att] of msg.attachments) {
+      if (/\.(mp4|mov|webm|avi|mkv)$/i.test(att.name || "") || (att.contentType || "").startsWith("video/")) {
+        try { videoBuf = await fetchBuffer(att.url); } catch { /* skip */ }
+        break;
+      }
+    }
+    if (!videoBuf && msg.reference) {
+      try {
+        const ref = await msg.channel.messages.fetch(msg.reference.messageId);
+        for (const [, att] of ref.attachments) {
+          if (/\.(mp4|mov|webm|avi)$/i.test(att.name || "") || (att.contentType || "").startsWith("video/")) {
+            videoBuf = await fetchBuffer(att.url); break;
+          }
+        }
+      } catch { /* skip */ }
+    }
+    if (!videoBuf) videoBuf = lastVideoBuffer;
+    if (!videoBuf) { await msg.reply("❌ No video found. Attach a video or generate one first."); return; }
+
+    const progressMsg = await msg.reply(`🎞️ Converting to GIF (${startSec > 0 ? startSec + "s-" : ""}${durSec}s @ 10fps)...`);
+    try {
+      const ffmpeg = findFfmpeg();
+      if (!ffmpeg) throw new Error("ffmpeg not found");
+      const ts = Date.now();
+      const tmpIn = `/tmp/gif-in-${ts}.mp4`;
+      const tmpPalette = `/tmp/gif-pal-${ts}.png`;
+      const tmpOut = `/tmp/gif-out-${ts}.gif`;
+      fs.writeFileSync(tmpIn, videoBuf);
+
+      const ssFlag = startSec > 0 ? `-ss ${startSec}` : "";
+      const { execSync } = require("child_process");
+      execSync(`"${ffmpeg}" -y ${ssFlag} -t ${durSec} -i "${tmpIn}" -vf "fps=10,scale=320:-1:flags=lanczos,palettegen=stats_mode=diff" "${tmpPalette}"`, { timeout: 15000 });
+      execSync(`"${ffmpeg}" -y ${ssFlag} -t ${durSec} -i "${tmpIn}" -i "${tmpPalette}" -lavfi "fps=10,scale=320:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5" "${tmpOut}"`, { timeout: 60000 });
+
+      const gifBuf = fs.readFileSync(tmpOut);
+      const sizeMB = (gifBuf.length / 1024 / 1024).toFixed(1);
+      if (gifBuf.length > 24 * 1024 * 1024) {
+        await progressMsg.edit(`⚠️ GIF too large (${sizeMB}MB) — try a shorter duration.`);
+      } else {
+        await progressMsg.edit({ content: `🎞️ **GIF** (${sizeMB}MB, ${durSec}s @ 10fps)`, files: [new AttachmentBuilder(tmpOut, { name: "animation.gif" })], components: [gifButtons(progressMsg.id)] });
+        generationContext.set(progressMsg.id, { gifBuf, gifMp4Buf: Buffer.from(videoBuf), gifStartSec: startSec, gifDurSec: durSec, type: "gif", rootId: progressMsg.id });
+      }
+      [tmpIn, tmpPalette, tmpOut].forEach(f => { try { fs.unlinkSync(f); } catch { /* cleanup */ } });
+    } catch (e) {
+      console.error("[!gif]", e.message);
+      await progressMsg.edit(`❌ GIF failed: ${e.message.slice(0, 300)}`);
+    }
+    return;
+  }
+
   // ── !capcut message command — CapCut premium composition ─────────────────────
   if (msg.content && msg.content.toLowerCase().startsWith("!capcut") && !isClaudeQuery) {
     const args = msg.content.slice(7).trim().split(/\s+/);
     const PRESET_NAMES = ["short", "short-long", "full", "full-long", "vertical", "vertical-long"];
-    const STYLE_NAMES = ["cinematic", "vibrant", "moody", "vintage", "dark", "dreamy", "bright", "clean", "brainslop", "ludicrous"];
+    const STYLE_NAMES = ["cinematic", "vibrant", "moody", "vintage", "dark", "dreamy", "bright", "clean", "brainslop", "ludicrous", "glitchpunk", "neondream", "weatherwitch", "retrofuture", "motionsick", "animecore", "goldenhour", "splitreality", "16bit-spiritual"];
     const LYRICS_STYLES = ["karaoke", "subtitles", "viral"];
 
-    let preset = "short", style = "cinematic", captionParts = [], lyrics = false, lyricsStyle = "karaoke", beattrack = false, renderMode = "draft";
+    let preset = "short", style = "cinematic", captionParts = [], lyrics = false, lyricsStyle = "karaoke", beattrack = false, renderMode = "draft", customAr = undefined;
     for (const arg of args) {
       const lower = arg.toLowerCase();
       if (PRESET_NAMES.includes(lower)) preset = lower;
@@ -5593,9 +5824,10 @@ client.on("messageCreate", async (msg) => {
       else if (lower === "beattrack" || lower === "beat" || lower === "beats") beattrack = true;
       else if (lower === "render:desktop" || lower === "desktop") renderMode = "desktop";
       else if (lower === "render:draft" || lower === "draft") renderMode = "draft";
+      else if (/^\d+:\d+$/.test(lower)) customAr = lower;
       else captionParts.push(arg);
     }
-    if (beattrack && !["brainslop", "ludicrous"].includes(style)) style = "brainslop";
+    if (beattrack && !["brainslop", "ludicrous", "glitchpunk", "motionsick", "splitreality", "16bit-spiritual"].includes(style)) style = "brainslop";
     const caption = captionParts.length > 0 ? captionParts.join(" ") : null;
 
     // Collect attachments
@@ -5630,7 +5862,7 @@ client.on("messageCreate", async (msg) => {
       const { capcutCompose, cleanupCompose } = require("./lib/capcut-compose");
       const result = await capcutCompose({
         images, videos, audioBuffer: audios[0] || null,
-        preset, style, caption, lyrics, lyricsStyle, beattrack,
+        preset, style, caption, lyrics, lyricsStyle, beattrack, customAr,
       });
 
       const info = [
@@ -5794,8 +6026,8 @@ client.on("messageCreate", async (msg) => {
             fs.writeFileSync(tmpVid, pending.mp4Buf);
             fs.writeFileSync(tmpAud, audBuf);
             const { execSync: es } = require("child_process");
-            let ffmpeg = "/home/nemoclaw/.local/bin/ffmpeg";
-            try { es("which ffmpeg", { encoding: "utf-8", timeout: 3000 }); ffmpeg = "ffmpeg"; } catch {}
+            const ffmpeg = findFfmpeg();
+            if (!ffmpeg) throw new Error("ffmpeg not found");
             es(
               `"${ffmpeg}" -y -i "${tmpVid}" -stream_loop -1 -i "${tmpAud}" ` +
               `-map 0:v:0 -map 1:a:0 -shortest -c:v copy -c:a aac -b:a 192k "${tmpOut}"`,
@@ -5859,8 +6091,8 @@ client.on("messageCreate", async (msg) => {
             fs.writeFileSync(tmpIn, audioBuf);
 
             const { execSync } = require("child_process");
-            let ffmpeg = "/home/nemoclaw/.local/bin/ffmpeg";
-            try { execSync("which ffmpeg", { encoding: "utf-8", timeout: 3000 }); ffmpeg = "ffmpeg"; } catch {}
+            const ffmpeg = findFfmpeg();
+            if (!ffmpeg) throw new Error("ffmpeg not found");
 
             execSync(
               `"${ffmpeg}" -y -ss ${start} -to ${end} -i "${tmpIn}" -c copy "${tmpOut}"`,
@@ -6994,7 +7226,7 @@ Output ONLY the JSON object. No markdown, no explanation.`;
           } catch {}
           addSegment(msg.id, videoBuf);
           generationContext.set(msg.id, { prompt: combiPrompt, videoBuf, type: "video", rootId: msg.id });
-          const DISCORD_LIMIT_COMBI = 8 * 1024 * 1024;
+          const DISCORD_LIMIT_COMBI = 25 * 1024 * 1024;
           if (videoBuf.length > DISCORD_LIMIT_COMBI) {
             let videoUrl;
             try {

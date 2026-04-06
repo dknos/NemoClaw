@@ -169,6 +169,13 @@ const commands = [
     .addAttachmentOption(o => o.setName("audio").setDescription("Audio file to use as soundtrack (mp3, wav, ogg...)").setRequired(true)),
 
   new SlashCommandBuilder()
+    .setName("trim")
+    .setDescription("Trim a video or audio clip (e.g. 10s-end, 0:30-1:15)")
+    .addAttachmentOption(o => o.setName("file").setDescription("Video or audio file").setRequired(true))
+    .addStringOption(o => o.setName("start").setDescription("Start time (e.g. 10s, 0:30, 1:15.5) — default: 0s"))
+    .addStringOption(o => o.setName("end").setDescription("End time (e.g. 45s, 1:30, end) — default: end")),
+
+  new SlashCommandBuilder()
     .setName("edit")
     .setDescription("Compose a video from images, clips, and music")
     .addStringOption(o => o.setName("preset").setDescription("Video format")
