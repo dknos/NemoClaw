@@ -9,23 +9,14 @@
 const { execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
-
-const FFMPEG_BIN = (() => {
-  const candidates = ["/home/nemoclaw/.local/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"];
-  for (const p of candidates) { try { if (fs.existsSync(p)) return p; } catch {} }
-  return "ffmpeg";
-})();
-const FFPROBE_BIN = FFMPEG_BIN.replace(/ffmpeg$/, "ffprobe");
+const { findFfmpeg, getMediaDuration } = require("./ffmpeg-utils");
 
 /**
  * Get audio duration in seconds.
+ * Uses shared ffprobe→ffmpeg fallback. Returns 0 if detection fails.
  */
 function getAudioDuration(audioPath) {
-  const out = execSync(
-    `${FFPROBE_BIN} -v error -show_entries format=duration -of csv=p=0 "${audioPath}"`,
-    { encoding: "utf8", timeout: 30000 }
-  ).trim();
-  return parseFloat(out) || 0;
+  return getMediaDuration(audioPath) || 0;
 }
 
 /**
@@ -34,11 +25,13 @@ function getAudioDuration(audioPath) {
  */
 function extractEnergy(audioPath, hopSec = 0.02) {
   // Convert to mono, measure RMS in small windows
+  const ffmpeg = findFfmpeg();
+  if (!ffmpeg) throw new Error("ffmpeg not found — cannot extract audio energy");
   const tmpWav = `/tmp/beat-detect-${Date.now()}.raw`;
   try {
     // Get raw PCM samples at 22050Hz mono
     execSync(
-      `${FFMPEG_BIN} -y -i "${audioPath}" -ac 1 -ar 22050 -f f32le -acodec pcm_f32le "${tmpWav}"`,
+      `"${ffmpeg}" -y -i "${audioPath}" -ac 1 -ar 22050 -f f32le -acodec pcm_f32le "${tmpWav}"`,
       { timeout: 60000, stdio: "pipe" }
     );
     const raw = fs.readFileSync(tmpWav);
@@ -57,7 +50,7 @@ function extractEnergy(audioPath, hopSec = 0.02) {
     }
     return frames;
   } finally {
-    try { fs.unlinkSync(tmpWav); } catch {}
+    try { fs.unlinkSync(tmpWav); } catch { /* cleanup best-effort */ }
   }
 }
 

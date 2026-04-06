@@ -40,6 +40,19 @@ function startFileServer(dir, opts = {}) {
     const mime = MIME_MAP[ext] || "application/octet-stream";
     const stat = fs.statSync(filePath);
 
+    const headers = {
+      "Content-Length": stat.size,
+      "Content-Type": mime,
+      "Accept-Ranges": "bytes",
+    };
+
+    // HEAD — return headers only (CapCut checks Content-Length via HEAD before downloading)
+    if (req.method === "HEAD") {
+      res.writeHead(200, headers);
+      res.end();
+      return;
+    }
+
     // Support range requests for video seeking
     const range = req.headers.range;
     if (range) {
@@ -54,11 +67,7 @@ function startFileServer(dir, opts = {}) {
       });
       fs.createReadStream(filePath, { start, end }).pipe(res);
     } else {
-      res.writeHead(200, {
-        "Content-Length": stat.size,
-        "Content-Type": mime,
-        "Accept-Ranges": "bytes",
-      });
+      res.writeHead(200, headers);
       fs.createReadStream(filePath).pipe(res);
     }
   });
@@ -96,6 +105,14 @@ function startFileServer(dir, opts = {}) {
  * Detect Docker gateway IP (how containers reach the host).
  */
 function detectDockerGateway() {
+  // On WSL2 + Docker Desktop, host.docker.internal is the only reliable route
+  // from containers back to WSL. The bridge gateway (172.17.0.1) doesn't work.
+  try {
+    const { execSync } = require("child_process");
+    // Check if we're in WSL
+    const isWSL = execSync("uname -r", { encoding: "utf8", timeout: 2000 }).includes("microsoft");
+    if (isWSL) return "host.docker.internal";
+  } catch { /* not critical */ }
   try {
     const { execSync } = require("child_process");
     const out = execSync(
@@ -104,8 +121,7 @@ function detectDockerGateway() {
     ).trim();
     if (out && /^\d+\.\d+\.\d+\.\d+$/.test(out)) return out;
   } catch { /* docker inspect may fail */ }
-  // Fallback: common Docker gateway
-  return "172.17.0.1";
+  return "host.docker.internal";
 }
 
 /**

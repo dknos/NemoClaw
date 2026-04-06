@@ -10,33 +10,51 @@ const os = require("os");
 const cc = require("./capcut-client");
 const { startFileServer, writeMediaFiles } = require("./capcut-file-server");
 
-// ── Presets (same dimensions/durations as video-editor.js) ──────────────────
+// ── Presets (shared with video-editor.js) ───────────────────────────────────
 
-const PRESETS = {
-  short:           { w: 1080, h: 1920, targetSec: 14.7 },
-  "short-long":    { w: 1080, h: 1920, targetSec: 59.7 },
-  full:            { w: 1920, h: 1080, targetSec: 59.7 },
-  "full-long":     { w: 1920, h: 1080, targetSec: 119.7 },
-  vertical:        { w: 1080, h: 1920, targetSec: 59.7 },
-  "vertical-long": { w: 1080, h: 1920, targetSec: 119.7 },
-};
+const { resolvePreset, PRESETS } = require("./video-presets");
 
 // ── Style → CapCut effect/filter mapping ────────────────────────────────────
 
 const STYLE_MAP = {
-  cinematic:  { filterNames: ["1980"],       effectNames: [],                      transition: "fade_black" },
-  vibrant:    { filterNames: ["Ditto"],      effectNames: ["kirakira"],            transition: "fade_black" },
-  moody:      { filterNames: ["ABG"],        effectNames: [],                      transition: "fade_black" },
-  vintage:    { filterNames: ["VHS III"],    effectNames: ["70s", "betamax"],      transition: "fade_black" },
-  dark:       { filterNames: ["KE1"],        effectNames: ["X-Signal"],            transition: "fade_black" },
-  dreamy:     { filterNames: ["Lofi II"],    effectNames: [],                      transition: "fade_black" },
-  bright:     { filterNames: [],             effectNames: [],                      transition: "fade_black" },
-  clean:      { filterNames: [],             effectNames: [],                      transition: "fade_black" },
-  brainslop:  { filterNames: [],             effectNames: ["CCD闪光", "RGB描边", "抖动"],          transition: null },
-  ludicrous:  { filterNames: [],             effectNames: ["X-Signal", "抖动", "CCD闪光", "定格闪烁"], transition: null },
+  cinematic:     { filterNames: ["1980"],       effectNames: [],                                                          transition: "fade_black" },
+  vibrant:       { filterNames: ["Ditto"],      effectNames: ["kirakira"],                                                transition: "fade_black" },
+  moody:         { filterNames: ["ABG"],        effectNames: [],                                                          transition: "fade_black" },
+  vintage:       { filterNames: ["VHS III"],    effectNames: ["70s", "betamax"],                                          transition: "fade_black" },
+  dark:          { filterNames: ["KE1"],        effectNames: ["X-Signal"],                                                transition: "fade_black" },
+  dreamy:        { filterNames: ["Lofi II"],    effectNames: [],                                                          transition: "fade_black" },
+  bright:        { filterNames: [],             effectNames: [],                                                          transition: "fade_black" },
+  clean:         { filterNames: [],             effectNames: [],                                                          transition: "fade_black" },
+  // NOTE: Effect names are CapCut's Chinese catalog IDs — translations in comments.
+  // CCD闪光=CCD Flash, RGB描边=RGB Outline, 抖动=Shake, 定格闪烁=Freeze Flicker,
+  // 故障=Glitch, 色差故障=Chromatic Aberration, 横纹故障=Scanline Glitch,
+  // 像素震闪=Pixel Shock, 荧幕噪点=Screen Noise, 霓虹灯=Neon Light,
+  // 霓虹投影=Neon Projection, 光晕 II=Halo II, 仙尘闪闪=Fairy Dust Sparkle,
+  // 下雨=Rain, 浓雾=Dense Fog, 雾气=Mist, 落叶=Falling Leaves, 流星雨=Meteor Shower,
+  // 雪花=Snowflakes, 复古DV=Retro DV, 胶片漏光=Film Light Leak, 90s画质=90s Quality,
+  // 冲刺 III=Dash III, 动感模糊=Motion Blur, 震动=Vibration, 旋转变焦=Spin Zoom,
+  // 抖动模糊=Shake Blur, 摇晃运镜=Shaky Camera, 漫画=Comic, 复古漫画=Retro Comic,
+  // 动感色卡=Motion Color Card, 冲刺=Dash, 星光闪耀=Starlight Shine,
+  // 丁达尔光线=Tyndall Light, 光斑飘落=Light Spots Falling, 胶片=Film, 晴天光线=Sunny Rays,
+  // 三屏=Triple Screen, 分屏开幕=Split Screen Open, 两屏=Dual Screen,
+  // 冲击波=Shockwave, 闪光震动=Flash Shake, 负片闪烁=Negative Flicker
+  brainslop:     { filterNames: [],             effectNames: ["CCD闪光", "RGB描边", "抖动"],                              transition: null },              // CCD Flash, RGB Outline, Shake
+  ludicrous:     { filterNames: [],             effectNames: ["X-Signal", "抖动", "CCD闪光", "定格闪烁"],                 transition: null },              // X-Signal, Shake, CCD Flash, Freeze Flicker
+  glitchpunk:    { filterNames: ["2077"],       effectNames: ["RGB描边", "故障", "色差故障", "横纹故障", "像素震闪", "荧幕噪点"], transition: null },        // RGB Outline, Glitch, Chromatic Aberration, Scanline Glitch, Pixel Shock, Screen Noise
+  neondream:     { filterNames: ["City Walk"],  effectNames: ["霓虹灯", "霓虹投影", "光晕 II", "kirakira", "仙尘闪闪"],  transition: "fade_black" },      // Neon Light, Neon Projection, Halo II, kirakira, Fairy Dust
+  weatherwitch:  { filterNames: ["ABG"],        effectNames: ["下雨", "浓雾", "雾气", "落叶", "流星雨", "雪花"],          transition: "fade_black" },      // Rain, Dense Fog, Mist, Falling Leaves, Meteor Shower, Snowflakes
+  retrofuture:   { filterNames: ["VHS III", "90s"], effectNames: ["复古DV", "VCR", "胶片漏光", "90s画质", "荧幕噪点"],    transition: "fade_black" },      // Retro DV, VCR, Film Light Leak, 90s Quality, Screen Noise
+  motionsick:    { filterNames: ["KV5D"],       effectNames: ["冲刺 III", "动感模糊", "震动", "旋转变焦", "抖动模糊", "摇晃运镜"], transition: null },      // Dash III, Motion Blur, Vibration, Spin Zoom, Shake Blur, Shaky Camera
+  animecore:     { filterNames: ["Ditto"],      effectNames: ["漫画", "复古漫画", "动感色卡", "冲刺", "星光闪耀"],        transition: "fade_black" },      // Comic, Retro Comic, Motion Color Card, Dash, Starlight Shine
+  goldenhour:    { filterNames: ["1980"],       effectNames: ["丁达尔光线", "光斑飘落", "胶片", "晴天光线"],              transition: "fade_black" },      // Tyndall Light, Light Spots Falling, Film, Sunny Rays
+  splitreality:  { filterNames: ["KE1"],        effectNames: ["三屏", "分屏开幕", "两屏", "RGB描边", "故障"],             transition: null },              // Triple Screen, Split Screen Open, Dual Screen, RGB Outline, Glitch
+  "16bit-spiritual": { filterNames: ["VHS III", "90s"], effectNames: ["像素震闪", "荧幕噪点", "复古DV", "90s画质", "定格闪烁", "故障"], transition: null }, // Pixel Shock, Screen Noise, Retro DV, 90s Quality, Freeze Flicker, Glitch
 };
 
-const BEAT_EFFECT_NAMES = ["CCD闪光", "抖动", "RGB描边", "定格闪烁", "X-Signal"];
+// Beat-synced effects — triggered on detected beats. Names are CapCut catalog IDs.
+// CCD Flash, Shake, RGB Outline, Freeze Flicker, X-Signal, Glitch, Chromatic Aberration,
+// Shockwave, Flash Shake, Vibration, Pixel Shock, Negative Flicker
+const BEAT_EFFECT_NAMES = ["CCD闪光", "抖动", "RGB描边", "定格闪烁", "X-Signal", "故障", "色差故障", "冲击波", "闪光震动", "震动", "像素震闪", "负片闪烁"];
 
 // ── Effect/Filter catalog cache ─────────────────────────────────────────────
 
@@ -136,7 +154,10 @@ async function transcribeAndTrim(audioPath, tmpDir, audioDurSec, targetSec) {
       console.log(`[capcut-compose] audio offset: skipping ${audioOffset.toFixed(1)}s intro`);
       const trimmedPath = path.join(tmpDir, "audio_trimmed.mp3");
       const { execSync } = require("child_process");
-      execSync(`ffmpeg -y -ss ${audioOffset} -i "${audioPath}" -c copy "${trimmedPath}"`, { timeout: 30000, stdio: "pipe" });
+      const { findFfmpeg } = require("./ffmpeg-utils");
+      const ffmpeg = findFfmpeg();
+      if (!ffmpeg) throw new Error("ffmpeg not found — cannot trim audio");
+      execSync(`"${ffmpeg}" -y -ss ${audioOffset} -i "${audioPath}" -c copy "${trimmedPath}"`, { timeout: 30000, stdio: "pipe" });
       fs.copyFileSync(trimmedPath, audioPath);
       if (transcript.words) {
         for (const w of transcript.words) { w.start -= audioOffset; w.end -= audioOffset; }
@@ -428,12 +449,13 @@ const COMPOSE_DEFAULTS = {
   images: [], videos: [], audioBuffer: null,
   preset: "short", style: "cinematic", caption: null,
   lyrics: false, lyricsStyle: "karaoke", beattrack: false,
+  resolution: undefined, customAr: undefined,
 };
 
 async function capcutCompose(opts) {
   const o = { ...COMPOSE_DEFAULTS, ...opts };
   const { images, videos, audioBuffer, caption, lyrics, lyricsStyle, beattrack } = o;
-  const presetCfg = PRESETS[o.preset] || PRESETS.short;
+  const presetCfg = resolvePreset(o.preset, o.resolution, o.customAr);
   const styleCfg = STYLE_MAP[o.style] || STYLE_MAP.cinematic;
   const style = o.style;
   const { w, h, targetSec } = presetCfg;
