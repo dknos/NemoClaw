@@ -10,10 +10,33 @@
 
 const https = require("https");
 const http  = require("http");
+const fs    = require("fs");
+const os    = require("os");
 
 const PROVIDER       = (process.env.SUNO_PROVIDER || "direct").toLowerCase();
 const GOAPI_KEY      = process.env.SUNO_API_KEY     || "";
-const REFRESH_TOKEN  = process.env.SUNO_REFRESH_TOKEN || process.env.SUNO_COOKIE || "";
+const SUNO_COOKIE_FILE = process.env.SUNO_COOKIE_FILE
+  || require("path").join(os.homedir(), ".nemoclaw", "suno-cookies.json");
+
+// Load __client token: env var → saved cookies → direct env file read
+let REFRESH_TOKEN = process.env.SUNO_REFRESH_TOKEN || process.env.SUNO_COOKIE || "";
+if (!REFRESH_TOKEN) {
+  try {
+    const cookies = JSON.parse(fs.readFileSync(SUNO_COOKIE_FILE, "utf8"));
+    const client = cookies.find(c => c.name === "__client");
+    if (client) { REFRESH_TOKEN = client.value; console.log("[suno] loaded __client from saved cookies"); }
+  } catch {}
+}
+if (!REFRESH_TOKEN) {
+  // Last resort: read directly from .nemoclaw_env (PM2 may not propagate env correctly)
+  try {
+    const envPath = require("path").join(os.homedir(), ".nemoclaw_env");
+    const m = fs.readFileSync(envPath, "utf8").match(/^SUNO_REFRESH_TOKEN=(.+)$/m);
+    if (m && m[1]) { REFRESH_TOKEN = m[1].trim(); console.log("[suno] loaded token from .nemoclaw_env directly"); }
+  } catch {}
+}
+
+console.log(`[suno] token loaded: ${REFRESH_TOKEN ? "yes (" + REFRESH_TOKEN.length + " chars)" : "NO — all 3 fallbacks failed"}`);
 
 const CLERK_BASE     = "https://auth.suno.com";
 const API_BASE       = "https://studio-api.prod.suno.com";
@@ -101,10 +124,38 @@ const CLERK_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
 };
 
+// Save refreshed __client cookie back to cookie file (keeps session alive)
+function saveRefreshedCookie(resHeaders) {
+  try {
+    const setCookies = resHeaders["set-cookie"];
+    if (!setCookies) return;
+    const arr = Array.isArray(setCookies) ? setCookies : [setCookies];
+    for (const sc of arr) {
+      // Match exactly __client= (not __client_uat= etc), value must be JWT-length
+      if (!/^\s*__client=/.test(sc)) continue;
+      const m = sc.match(/^\s*__client=([^;]{50,})/);
+      if (m && m[1] !== REFRESH_TOKEN) {
+        REFRESH_TOKEN = m[1];
+        CLERK_HEADERS["Cookie"] = `__client=${REFRESH_TOKEN}`;
+        console.log("[suno] __client cookie refreshed");
+        // Update saved cookies file
+        if (fs.existsSync(SUNO_COOKIE_FILE)) {
+          const cookies = JSON.parse(fs.readFileSync(SUNO_COOKIE_FILE, "utf8"));
+          const idx = cookies.findIndex(c => c.name === "__client");
+          if (idx >= 0) cookies[idx].value = REFRESH_TOKEN;
+          else cookies.push({ name: "__client", value: REFRESH_TOKEN, domain: ".suno.com", path: "/" });
+          fs.writeFileSync(SUNO_COOKIE_FILE, JSON.stringify(cookies, null, 2));
+        }
+      }
+    }
+  } catch {}
+}
+
 async function getSessionId() {
   if (cachedSid) return cachedSid;
   const url = `${CLERK_BASE}/v1/client?__clerk_api_version=${CLERK_API_VER}&_clerk_js_version=${CLERK_JS_VER}`;
   const res  = await request(url, { headers: CLERK_HEADERS });
+  saveRefreshedCookie(res.headers);
   if (res.status !== 200)
     throw new Error(`Clerk client ${res.status}: ${res.body.slice(0, 200)}`);
   const data = JSON.parse(res.body);
@@ -121,6 +172,7 @@ async function getAccessToken() {
   const sid = await getSessionId();
   const url = `${CLERK_BASE}/v1/client/sessions/${sid}/tokens?__clerk_api_version=${CLERK_API_VER}&_clerk_js_version=${CLERK_JS_VER}`;
   const res  = await request(url, { method: "POST", headers: { ...CLERK_HEADERS, "Content-Length": "2" } }, {});
+  saveRefreshedCookie(res.headers);
   if (res.status !== 200)
     throw new Error(`Token renewal ${res.status}: ${res.body.slice(0, 200)}`);
   const data  = JSON.parse(res.body);
@@ -145,8 +197,15 @@ async function sunoReq(method, path, body = null) {
 // ── Direct generation ─────────────────────────────────────────────
 
 async function generateDirect(prompt, options) {
-  if (!REFRESH_TOKEN)
-    throw new Error("SUNO_REFRESH_TOKEN not set");
+  if (!REFRESH_TOKEN) {
+    // Last-ditch reload from env file
+    try {
+      const envPath = require("path").join(os.homedir(), ".nemoclaw_env");
+      const em = fs.readFileSync(envPath, "utf8").match(/^SUNO_REFRESH_TOKEN=(.+)$/m);
+      if (em && em[1]) { REFRESH_TOKEN = em[1].trim(); CLERK_HEADERS["Cookie"] = `__client=${REFRESH_TOKEN}`; console.log("[suno] emergency reload from env file"); }
+    } catch {}
+    if (!REFRESH_TOKEN) throw new Error("SUNO_REFRESH_TOKEN not set");
+  }
 
   // Check captcha requirement
   const checkRes = await sunoReq("POST", "/api/c/check", { ctype: "generation" });
@@ -156,33 +215,36 @@ async function generateDirect(prompt, options) {
   // Solve captcha if required
   let captchaToken = null;
   if (check.required) {
-    console.log("[suno/direct] solving captcha via Playwright + vision...");
-    const solved = await runCaptchaSolver(REFRESH_TOKEN, prompt);
-    // If solver captured full clips, skip API call entirely
-    if (solved.clips?.length) {
-      console.log("[suno/direct] solver returned clips directly, polling for completion...");
-      const ids = solved.clips.map(c => c.id);
-      for (let i = 0; i < POLL_MAX; i++) {
-        await sleep(POLL_INTERVAL_MS);
-        const pollRes  = await sunoReq("GET", `/api/feed/v2?ids=${ids.join(",")}`);
-        const pollData = JSON.parse(pollRes.body);
-        const tracks   = pollData.clips || [];
-        const statuses = tracks.map(t => t.status);
-        console.log(`[suno/direct] poll ${i + 1}: ${statuses.join(", ")}`);
-        const anyErr = tracks.find(t => t.status === "error");
-        if (anyErr) throw new Error(`Suno track error: ${anyErr.metadata?.error_message || "unknown"}`);
-        if (tracks.every(t => ["streaming", "complete"].includes(t.status))) {
-          return tracks.map(t => ({
-            id: t.id, title: t.title || prompt.slice(0, 50),
-            audioUrl: t.audio_url, imageUrl: t.image_url,
-            duration: t.metadata?.duration, tags: t.metadata?.tags || "",
-          }));
+    try {
+      const solved = await runCaptchaSolver(REFRESH_TOKEN, prompt);
+      if (solved.clips?.length) {
+        console.log("[suno/direct] solver returned clips directly, polling for completion...");
+        const ids = solved.clips.map(c => c.id);
+        for (let i = 0; i < POLL_MAX; i++) {
+          await sleep(POLL_INTERVAL_MS);
+          const pollRes  = await sunoReq("GET", `/api/feed/v2?ids=${ids.join(",")}`);
+          const pollData = JSON.parse(pollRes.body);
+          const tracks   = pollData.clips || [];
+          const statuses = tracks.map(t => t.status);
+          console.log(`[suno/direct] poll ${i + 1}: ${statuses.join(", ")}`);
+          const anyErr = tracks.find(t => t.status === "error");
+          if (anyErr) throw new Error(`Suno track error: ${anyErr.metadata?.error_message || "unknown"}`);
+          if (tracks.every(t => ["streaming", "complete"].includes(t.status))) {
+            return tracks.map(t => ({
+              id: t.id, title: t.title || prompt.slice(0, 50),
+              audioUrl: t.audio_url, imageUrl: t.image_url,
+              duration: t.metadata?.duration, tags: t.metadata?.tags || "",
+            }));
+          }
         }
+        throw new Error("Suno timed out after 3 minutes");
       }
-      throw new Error("Suno timed out after 3 minutes");
+      captchaToken = solved.token || null;
+      console.log("[suno/direct] captcha token obtained");
+    } catch (captchaErr) {
+      console.warn("[suno/direct] captcha solver failed:", captchaErr.message);
+      throw new Error("Captcha required but solver failed — try again later or re-login");
     }
-    captchaToken = solved.token || null;
-    console.log("[suno/direct] captcha token obtained");
   }
 
   const isCustom = !!(options.tags || options.lyrics);
@@ -194,7 +256,7 @@ async function generateDirect(prompt, options) {
         mv:                 options.model  || "chirp-fenix",
         make_instrumental:  options.instrumental || false,
         generation_type:    "TEXT",
-        token:              captchaToken,
+        ...(captchaToken ? { token: captchaToken } : {}),
         user_uploaded_images_b64: null,
       }
     : {
@@ -203,12 +265,12 @@ async function generateDirect(prompt, options) {
         mv:                     options.model || "chirp-fenix",
         make_instrumental:      options.instrumental || false,
         generation_type:        "TEXT",
-        token:                  captchaToken,
+        ...(captchaToken ? { token: captchaToken } : {}),
         user_uploaded_images_b64: null,
       };
 
   console.log(`[suno/direct] generating: "${prompt.slice(0, 60)}"`);
-  const genRes  = await sunoReq("POST", "/api/generate/v2-web/", payload);
+  const genRes = await sunoReq("POST", "/api/generate/v2-web/", payload);
   if (genRes.status !== 200)
     throw new Error(`Suno generate ${genRes.status}: ${genRes.body.slice(0, 300)}`);
 

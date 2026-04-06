@@ -4,7 +4,7 @@
 // Usage: node captcha-solver.js <refresh_token> <prompt>
 // Outputs JSON {token, clips} to stdout on success
 
-const { chromium } = require("playwright-core");
+const { chromium } = require("/home/nemoclaw/.npm/_npx/e41f203b7505f1fb/node_modules/playwright-core");
 const http  = require("http");
 const https = require("https");
 const fs    = require("fs");
@@ -269,8 +269,8 @@ async function solve(refreshToken, prompt) {
 
         let b64, coordOffset = { x: 0, y: 0 };
         if (bbox && bbox.width > 100) {
-          // Crop screenshot to challenge iframe — tiles fill the whole image
-          const chalShot = await chalLocator.screenshot({ type: "png" });
+          // Clip page screenshot to challenge iframe bbox (cross-origin iframes can't use locator.screenshot)
+          const chalShot = await page.screenshot({ type: "png", clip: { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height } });
           b64 = chalShot.toString("base64");
           coordOffset = { x: bbox.x, y: bbox.y };
           console.error(`[captcha-solver] challenge bbox: ${Math.round(bbox.x)},${Math.round(bbox.y)} ${Math.round(bbox.width)}x${Math.round(bbox.height)}`);
