@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global fetch, URLSearchParams, BUFFER_IG_ID */
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,8 +18,8 @@
  */
 
 const { Client, GatewayIntentBits, Partials, AttachmentBuilder,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, InteractionType,
-  StringSelectMenuBuilder, StringSelectMenuOptionBuilder,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, InteractionType: _InteractionType,
+  StringSelectMenuBuilder, StringSelectMenuOptionBuilder: _StringSelectMenuOptionBuilder,
   ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require(
   require("path").resolve(__dirname, "../node_modules/discord.js")
@@ -78,12 +79,12 @@ const trends = require("./trends");
 const bu = require("./lib/bridge-utils");
 const gdrive = require("./google-drive");
 const { generateSuno, generateVideoForClip, generateLyrics: generateSunoLyrics, downloadAudio: downloadSunoAudio } = require("./suno");
-const { getStore } = require("@netlify/blobs");
+const { getStore: _getStore } = require("@netlify/blobs");
 const { execSync } = require("child_process");
 
 // ── Static.app deploy helpers ───────────────────────────────
-const STATICAPP_KEY = process.env.STATICAPP_API_KEY || "";
-const STATICAPP_SITE_ID = 154864;
+const _STATICAPP_KEY = process.env.STATICAPP_API_KEY || "";
+const _STATICAPP_SITE_ID = 154864;
 const SITE_DATA_DIR = path.join(os.homedir(), ".nemoclaw", "site-data");
 const POSTS_FILE = path.join(SITE_DATA_DIR, "posts.json");
 
@@ -96,8 +97,8 @@ function savePosts(posts) {
   const json = JSON.stringify(posts, null, 2);
   fs.writeFileSync(POSTS_FILE, json);
   // Keep public/data and out/data in sync so next build doesn't overwrite with stale data
-  try { const pd = "/tmp/netify-build/public/data"; if (!fs.existsSync(pd)) fs.mkdirSync(pd, { recursive: true }); fs.writeFileSync(path.join(pd, "posts.json"), json); } catch {}
-  try { const od = "/tmp/netify-build/out/data"; if (fs.existsSync(od)) fs.writeFileSync(path.join(od, "posts.json"), json); } catch {}
+  try { const pd = "/tmp/netify-build/public/data"; if (!fs.existsSync(pd)) fs.mkdirSync(pd, { recursive: true }); fs.writeFileSync(path.join(pd, "posts.json"), json); } catch { /* ignored */ }
+  try { const od = "/tmp/netify-build/out/data"; if (fs.existsSync(od)) fs.writeFileSync(path.join(od, "posts.json"), json); } catch { /* ignored */ }
 }
 
 async function deployToFirebase() {
@@ -132,8 +133,8 @@ function backupMedia(buf, fileName, mimeType) {
   try {
     fs.writeFileSync(tmpPath, buf);
     gdrive.uploadToDrive(tmpPath, mimeType, fileName, MEDIA_FOLDER_ID)
-      .then(r => { console.log(`[gdrive] backed up ${fileName} → ${r.webViewLink}`); try { fs.unlinkSync(tmpPath); } catch {} })
-      .catch(e => { console.warn(`[gdrive] backup failed for ${fileName}: ${e.message}`); try { fs.unlinkSync(tmpPath); } catch {} });
+      .then(r => { console.log(`[gdrive] backed up ${fileName} → ${r.webViewLink}`); try { fs.unlinkSync(tmpPath); } catch { /* ignored */ } })
+      .catch(e => { console.warn(`[gdrive] backup failed for ${fileName}: ${e.message}`); try { fs.unlinkSync(tmpPath); } catch { /* ignored */ } });
   } catch (e) { console.warn(`[gdrive] write failed: ${e.message}`); }
 }
 
@@ -145,8 +146,8 @@ let lastVideoSetAt = 0; // timestamp — prevents stale reuse by agents
 let lastImageSetAt = 0;
 const MEDIA_TTL = 30 * 60 * 1000; // 30 min
 // Recover video buffer from disk if recent
-try { if (fs.existsSync("/tmp/input_video.mp4")) { const _age = Date.now() - fs.statSync("/tmp/input_video.mp4").mtimeMs; if (_age < MEDIA_TTL) { lastVideoBuffer = fs.readFileSync("/tmp/input_video.mp4"); lastVideoSetAt = Date.now(); lastVideoSetAt = Date.now(); console.log(`[startup] recovered lastVideoBuffer (${(lastVideoBuffer.length/1048576).toFixed(1)}MB, ${(_age/60000|0)}m old)`); } else { console.log(`[startup] skipped stale input_video.mp4 (${(_age/60000|0)}m old)`); } } } catch {}
-try { if (!lastVideoBuffer && fs.existsSync("/tmp/last_generated_video.mp4")) { const _age = Date.now() - fs.statSync("/tmp/last_generated_video.mp4").mtimeMs; if (_age < MEDIA_TTL) { lastVideoBuffer = fs.readFileSync("/tmp/last_generated_video.mp4"); lastVideoSetAt = Date.now(); lastVideoSetAt = Date.now(); console.log(`[startup] recovered lastVideoBuffer (${(lastVideoBuffer.length/1048576).toFixed(1)}MB, ${(_age/60000|0)}m old)`); } else { console.log(`[startup] skipped stale last_generated_video.mp4 (${(_age/60000|0)}m old)`); } } } catch {}
+try { if (fs.existsSync("/tmp/input_video.mp4")) { const _age = Date.now() - fs.statSync("/tmp/input_video.mp4").mtimeMs; if (_age < MEDIA_TTL) { lastVideoBuffer = fs.readFileSync("/tmp/input_video.mp4"); lastVideoSetAt = Date.now(); lastVideoSetAt = Date.now(); console.log(`[startup] recovered lastVideoBuffer (${(lastVideoBuffer.length/1048576).toFixed(1)}MB, ${(_age/60000|0)}m old)`); } else { console.log(`[startup] skipped stale input_video.mp4 (${(_age/60000|0)}m old)`); } } } catch { /* ignored */ }
+try { if (!lastVideoBuffer && fs.existsSync("/tmp/last_generated_video.mp4")) { const _age = Date.now() - fs.statSync("/tmp/last_generated_video.mp4").mtimeMs; if (_age < MEDIA_TTL) { lastVideoBuffer = fs.readFileSync("/tmp/last_generated_video.mp4"); lastVideoSetAt = Date.now(); lastVideoSetAt = Date.now(); console.log(`[startup] recovered lastVideoBuffer (${(lastVideoBuffer.length/1048576).toFixed(1)}MB, ${(_age/60000|0)}m old)`); } else { console.log(`[startup] skipped stale last_generated_video.mp4 (${(_age/60000|0)}m old)`); } } } catch { /* ignored */ }
 let lastVideoMime   = null;
 let lastGeneratedImageBuffer = null; // last image generated by the bot (pulled from sandbox)
 // Expire stale media every 5 min so agents don't reuse hours-old buffers
@@ -172,9 +173,9 @@ function diag(event, data = {}) {
   try {
     const entry = JSON.stringify({ t: new Date().toISOString(), e: event, ...data }) + "\n";
     // Rotate if too large
-    try { if (fs.statSync(DIAG_LOG).size > DIAG_MAX) fs.renameSync(DIAG_LOG, DIAG_LOG + ".prev"); } catch {}
+    try { if (fs.statSync(DIAG_LOG).size > DIAG_MAX) fs.renameSync(DIAG_LOG, DIAG_LOG + ".prev"); } catch { /* ignored */ }
     fs.appendFileSync(DIAG_LOG, entry);
-  } catch {} // never crash for logging
+  } catch { /* ignored */ } // never crash for logging
 }
 
 // ── Message pipeline timer ──
@@ -232,7 +233,7 @@ try {
     for (const [k, v] of entries) { if (v > cutoff) global._contentDedup.set(k, v); }
     console.log(`[dedup] loaded ${global._contentDedup.size} content keys from disk`);
   }
-} catch {}
+} catch { /* ignored */ }
 const lastGifTime = new Map(); // per-user GIF cooldown (prevent Discord API rate limits)
 const generationContext = new Map(); // msgId → { prompt, ratio, imageBuf, videoBuf, type }
 const pendingMp4 = new Map();        // `${guildId}-${userId}` → { mp4Buf, ts } — awaiting audio upload to combine
@@ -678,11 +679,11 @@ function pushImageToSandbox(imageBuffer) {
     proc.stdin.write(imageBuffer.toString("base64"));
     proc.stdin.end();
     proc.on("close", (code) => {
-      try { require("fs").unlinkSync(confPath); require("fs").rmdirSync(confDir); } catch {}
+      try { require("fs").unlinkSync(confPath); require("fs").rmdirSync(confDir); } catch { /* ignored */ }
       resolve(code === 0);
     });
     proc.on("error", () => {
-      try { require("fs").unlinkSync(confPath); require("fs").rmdirSync(confDir); } catch {}
+      try { require("fs").unlinkSync(confPath); require("fs").rmdirSync(confDir); } catch { /* ignored */ }
       resolve(false);
     });
   });
@@ -885,7 +886,7 @@ const _KNOWN_REAL_RE = /agent gallery|webnovel|memory|social media|youtube|suno|
 
 let _contextCache = { id: null, exp: 0, hash: null }; // { id, exp, hash of content }
 
-async function getOrCreateContextCache(systemInstruction, geminiTools, toolConfig, model) {
+async function _getOrCreateContextCache(systemInstruction, geminiTools, toolConfig, model) {
   // Hash the static content to detect changes
   const crypto = require("crypto");
   const hashInput = JSON.stringify({ systemInstruction, geminiTools, toolConfig });
@@ -952,7 +953,7 @@ async function getOrCreateContextCache(systemInstruction, geminiTools, toolConfi
           const peek = JSON.parse(body);
           if (peek.tools) console.log(`[gemini-proxy] tools: ${peek.tools.length} functions: ${peek.tools.map(t => t.function?.name || t.name).join(", ")}`);
           if (peek.tool_choice) console.log(`[gemini-proxy] tool_choice: ${JSON.stringify(peek.tool_choice)}`);
-        } catch {}
+        } catch { /* ignored */ }
       }
 
       if (req.url.includes("/chat/completions") && req.method === "POST") {
@@ -1250,7 +1251,7 @@ async function graphApiRequest(path, params = {}) {
 }
 
 // Refresh page token if it's within 7 days of expiry
-async function refreshPageTokenIfNeeded() {
+async function _refreshPageTokenIfNeeded() {
   if (!FB_APP_ID || !FB_APP_SECRET || !FB_PAGE_TOKEN) return;
   try {
     const res = await new Promise((resolve, reject) => {
@@ -1273,7 +1274,7 @@ async function refreshPageTokenIfNeeded() {
 // Normalize media to Instagram-safe aspect ratios using ffmpeg.
 // Images: padded to 1:1 square (1080x1080) — safe for all IG feed posts.
 // Videos: padded to 9:16 (1080x1920) — required for Reels.
-async function normalizeForInstagram(fileBuffer, mimeType) {
+async function _normalizeForInstagram(fileBuffer, mimeType) {
   const ffmpeg = await findFfmpeg();
   if (!ffmpeg) {
     console.warn("[ig-norm] ffmpeg not found, skipping normalization");
@@ -1308,8 +1309,8 @@ async function normalizeForInstagram(fileBuffer, mimeType) {
     console.warn(`[ig-norm] normalization failed: ${e.message} — using original`);
     return fileBuffer;
   } finally {
-    try { fs.unlinkSync(tmpIn);  } catch {}
-    try { fs.unlinkSync(tmpOut); } catch {}
+    try { fs.unlinkSync(tmpIn);  } catch { /* ignored */ }
+    try { fs.unlinkSync(tmpOut); } catch { /* ignored */ }
   }
 }
 
@@ -1380,7 +1381,7 @@ async function postToBuffer({ text, mediaBuffer, mimeType, channels = ["instagra
       fs.writeFileSync(tmpPath, mediaBuffer);
       const folderId = MEDIA_FOLDER_ID;
       const driveResult = await gdrive.uploadToDrive(tmpPath, mimeType || "image/png", fileName, folderId);
-      try { fs.unlinkSync(tmpPath); } catch {}
+      try { fs.unlinkSync(tmpPath); } catch { /* ignored */ }
       const fileId = driveResult.id;
 
       // Make file publicly readable so Instagram can fetch it
@@ -1519,7 +1520,7 @@ async function waitForComfyAudio(promptId, timeoutMs = 300000) {
 
 // ── ComfyUI video generation (LTX 2.3) ───────────────────────────
 
-const COMFY_AV_WORKFLOW    = path.join(os.homedir(), "nemoclaw-persist", "ltx23-av-workflow.json"); // I2V (legacy, unused)
+const _COMFY_AV_WORKFLOW    = path.join(os.homedir(), "nemoclaw-persist", "ltx23-av-workflow.json"); // I2V (legacy, unused)
 const COMFY_I2V_WORKFLOW   = path.join(os.homedir(), "nemoclaw-persist", "ltx23-i2v-workflow.json"); // I2V dedicated (combi 1.1)
 const COMFY_T2V_WORKFLOW   = path.join(os.homedir(), "nemoclaw-persist", "ltx23-t2v-workflow.json"); // T2V dedicated
 const COMFY_COMBI_WORKFLOW = path.join(os.homedir(), "nemoclaw-persist", "ltx23-combi-workflow.json"); // First+Last frame
@@ -1627,7 +1628,7 @@ async function waitForComfyResult(promptId, timeoutMs = 900000) { // 15 min defa
     if (entry.status?.completed) {
       let videoFile = null;
       let lastFrameFile = null;
-      for (const [nodeId, out] of Object.entries(entry.outputs || {})) {
+      for (const [_nodeId, out] of Object.entries(entry.outputs || {})) {
         const videos = out.gifs || out.videos || [];
         if (videos.length > 0 && !videoFile) videoFile = videos[0];
         // Node 210 "Save Last Frame Image" outputs images
@@ -1719,10 +1720,10 @@ async function generateImageWithZTurbo(prompt, seed, style = "none") {
 
 // ── CapCut API composition (primary) ─────────────────────────────────────────
 const CAPCUT_API_BASE = "http://localhost:30000/openapi/capcut-mate/v1";
-const CAPCUT_DRAFT_FOLDER = process.env.CAPCUT_DRAFT_FOLDER || "";
-const CAPCUT_EXPORT_FOLDER = process.env.CAPCUT_EXPORT_FOLDER || "";
+const _CAPCUT_DRAFT_FOLDER = process.env.CAPCUT_DRAFT_FOLDER || "";
+const _CAPCUT_EXPORT_FOLDER = process.env.CAPCUT_EXPORT_FOLDER || "";
 
-const CAPCUT_TRANSITIONS = {
+const _CAPCUT_TRANSITIONS = {
   cinematic: "Dissolve",
   vibrant:   "RGB_Glitch",
   moody:     "Black_Fade",
@@ -1735,7 +1736,7 @@ const CAPCUT_TRANSITIONS = {
   bright:    "White_Flash",
 };
 
-async function capCutApiPost(endpoint, body) {
+async function _capCutApiPost(endpoint, body) {
   const res = await fetch(`${CAPCUT_API_BASE}${endpoint}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1752,7 +1753,7 @@ async function composeVideoWithCapCutAPI({ videoPaths = [], style = "cinematic",
   const { editVideo } = require("./lib/video-editor");
   const videos = videoPaths.map(p => fs.readFileSync(p));
   let audioBuffer = null;
-  if (musicPath) { try { audioBuffer = fs.readFileSync(musicPath); } catch {} }
+  if (musicPath) { try { audioBuffer = fs.readFileSync(musicPath); } catch { /* ignored */ } }
   const { videoBuffer } = await editVideo({
     images: [], videos, audioBuffer,
     preset: "short", style,
@@ -1765,7 +1766,8 @@ async function composeVideoWithCapCutAPI({ videoPaths = [], style = "cinematic",
 // Fully local, no external accounts. Concat + transitions + color + text + music.
 
 // ── ffmpeg/ffprobe discovery — imported from shared util ─────────
-const { findFfmpeg, findFfprobe, getMediaDuration } = require("./lib/ffmpeg-utils");
+const { findFfmpeg, findFfprobe: _findFfprobe, getMediaDuration } = require("./lib/ffmpeg-utils");
+const { initGenMonitor, reportGenEvent, GenStatus, GenType } = require("./lib/gen-monitor");
 
 const STYLE_FFMPEG_FILTERS = {
   cinematic: "curves=vintage,colorbalance=rs=-0.05:gs=0:bs=0.05:rm=0:gm=0:bm=0:rh=0.05:gh=0:bh=-0.05,eq=contrast=1.1:brightness=-0.02:saturation=0.85",
@@ -1847,7 +1849,7 @@ async function composeVideoWithFFmpeg({ videoPaths = [], style = "cinematic", te
     console.log(`[candy-compose] done — ${(result.length / 1024 / 1024).toFixed(1)}MB`);
     return result;
   } finally {
-    try { require("child_process").execSync(`rm -rf "${tmpDir}"`); } catch {}
+    try { require("child_process").execSync(`rm -rf "${tmpDir}"`); } catch { /* ignored */ }
   }
 }
 
@@ -1906,8 +1908,8 @@ async function extractLastFrameFromVideo(videoBuf) {
     console.log(`[chain] extracted last frame (${frameBuf.length} bytes) at ${lastSec}s`);
     return frameBuf;
   } finally {
-    try { fs.unlinkSync(tmpIn); } catch {}
-    try { fs.unlinkSync(tmpOut); } catch {}
+    try { fs.unlinkSync(tmpIn); } catch { /* ignored */ }
+    try { fs.unlinkSync(tmpOut); } catch { /* ignored */ }
   }
 }
 
@@ -1958,7 +1960,7 @@ async function stitchVideoSegments(segmentBuffers) {
     return result;
   } finally {
     // Cleanup temp files
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignored */ }
   }
 }
 
@@ -2047,7 +2049,6 @@ async function generateChainedVideo(segments, inputBuffers, msgReplyFn) {
 
     // Extract last frame for next segment's first frame
     if (!isLastSegment) {
-      currentFirstFrame = null;
       currentLastFrame = null;
 
       // Try 1: ComfyUI saved last frame (combi workflow node 210)
@@ -2114,7 +2115,7 @@ function httpsRequest(options, body) {
   });
 }
 
-async function uploadImageToNvidiaAssets(imageBuffer, contentType = "image/jpeg") {
+async function _uploadImageToNvidiaAssets(imageBuffer, contentType = "image/jpeg") {
   const key = process.env.NVIDIA_KONTEXT_KEY || process.env.NVIDIA_API_KEY;
 
   // Step 1: create asset record
@@ -2194,8 +2195,8 @@ print(len(indices))
     const b64frames = files.map(f => fs.readFileSync(`${tmpOut}/${f}`).toString("base64"));
     return b64frames;
   } finally {
-    try { fs.unlinkSync(tmpIn); } catch {}
-    try { fs.rmSync(tmpOut, { recursive: true }); } catch {}
+    try { fs.unlinkSync(tmpIn); } catch { /* ignored */ }
+    try { fs.rmSync(tmpOut, { recursive: true }); } catch { /* ignored */ }
   }
 }
 
@@ -2595,7 +2596,7 @@ function runAgentInSandbox(message, sessionId, onProgress) {
     proc.stderr.on("data", (d) => (stderr += d.toString()));
 
     proc.on("close", (code) => {
-      try { require("fs").unlinkSync(confPath); require("fs").rmdirSync(confDir); } catch {}
+      try { require("fs").unlinkSync(confPath); require("fs").rmdirSync(confDir); } catch { /* ignored */ }
 
       const lines = stdout.split("\n");
       const responseLines = lines.filter(
@@ -2674,7 +2675,7 @@ function pullImageFromSandbox(remotePath) {
     let b64 = "";
     proc.stdout.on("data", (d) => (b64 += d.toString()));
     proc.on("close", (code) => {
-      try { fs.unlinkSync(confPath); fs.rmdirSync(confDir); } catch {}
+      try { fs.unlinkSync(confPath); fs.rmdirSync(confDir); } catch { /* ignored */ }
       if (code === 0 && b64.trim()) {
         try {
           fs.writeFileSync(localPath, Buffer.from(b64.trim(), "base64"));
@@ -2740,6 +2741,10 @@ client.once("ready", async () => {
 
   // Register slash commands
   await registerCommands(TOKEN, client.user.id);
+
+  // Initialize generation monitor — posts to monitor channel (env or first allowed channel)
+  const monitorChanId = process.env.GEN_MONITOR_CHANNEL || (ALLOWED_CHANNELS[0] && ALLOWED_CHANNELS[0].channelId) || null;
+  initGenMonitor(client, monitorChanId);
 });
 
 // ── Slash command & button interaction handler ───────────────────
@@ -2855,7 +2860,7 @@ client.on("interactionCreate", async (interaction) => {
       // ── Grok make video (grokvid0..3) — use Grok's own video generation ────
       if (action.startsWith("grokvid")) {
         const idx = parseInt(action.replace("grokvid", "")) || 0;
-        const imagePrompt = ctx.prompt || "a beautiful image";
+        const _imagePrompt = ctx.prompt || "a beautiful image";
 
         // Show modal to collect video prompt
         const modal = new ModalBuilder()
@@ -2960,7 +2965,7 @@ client.on("interactionCreate", async (interaction) => {
         try {
           const buf = ctx.imageBuf || lastGeneratedImageBuffer;
           const videoBuf = await generateVideoWithComfyUI(ctx.prompt || "cinematic motion, smooth camera movement", buf);
-          lastVideoBuffer = videoBuf; lastVideoSetAt = Date.now(); lastVideoMime = "video/mp4"; try { fs.writeFileSync("/tmp/last_generated_video.mp4", videoBuf); } catch {} backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4");
+          lastVideoBuffer = videoBuf; lastVideoSetAt = Date.now(); lastVideoMime = "video/mp4"; try { fs.writeFileSync("/tmp/last_generated_video.mp4", videoBuf); } catch { /* ignored */ } backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4");
           addSegment(rootId, videoBuf);
           generationContext.set(interaction.message.id, { ...ctx, videoBuf, type: "video", rootId });
           const tmpVid = `/tmp/nemoclaw-btn-vid-${Date.now()}.mp4`;
@@ -2970,6 +2975,7 @@ client.on("interactionCreate", async (interaction) => {
           );
           fs.unlinkSync(tmpVid);
         } catch (e) {
+          reportGenEvent({ type: GenType.COMFY_I2V, status: GenStatus.ERROR, error: e, userId: interaction.user?.id, userName: interaction.user?.username, context: { prompt: ctx.prompt } });
           await interaction.followUp(`Video render failed: ${e.message.slice(0, 200)}`).catch(() =>
             interaction.editReply(`Video render failed: ${e.message.slice(0, 200)}`)
           );
@@ -2999,7 +3005,7 @@ client.on("interactionCreate", async (interaction) => {
             components: [videoRow],
           });
           generationContext.set(vidCtxKey, { prompt: ctx.prompt, videoBuf, type: "suno_video" });
-          try { fs.unlinkSync(tmpMp4); } catch {}
+          try { fs.unlinkSync(tmpMp4); } catch { /* ignored */ }
           backupMedia(videoBuf, `suno-video-${clipId}.mp4`, "video/mp4");
         } catch (e) {
           console.error(`[suno/video] failed: ${e.message}`);
@@ -3130,7 +3136,7 @@ client.on("interactionCreate", async (interaction) => {
             files: [new AttachmentBuilder(tmpOut, { name: "loop.gif" })],
             components: [gifButtons(msgId)],
           });
-          try { fs.unlinkSync(tmpIn); fs.unlinkSync(tmpOut); } catch {}
+          try { fs.unlinkSync(tmpIn); fs.unlinkSync(tmpOut); } catch { /* ignored */ }
           console.log(`[loopgif] created ${sizeMB}MB ping-pong loop`);
         } catch (e) {
           console.error(`[loopgif] failed: ${e.message}`);
@@ -3155,7 +3161,7 @@ client.on("interactionCreate", async (interaction) => {
             const tmpIn = `/tmp/nemoclaw-igimg-in-${tag}.mp4`;
             fs.writeFileSync(tmpIn, ctx.gifMp4Buf);
             execSync(`"${ffmpeg}" -y -i ${tmpIn} -vf "select=eq(n\\,0),scale=1080:-2:flags=lanczos" -frames:v 1 -q:v 2 ${tmpJpg}`, { timeout: 15000 });
-            try { fs.unlinkSync(tmpIn); } catch {}
+            try { fs.unlinkSync(tmpIn); } catch { /* ignored */ }
           } else {
             let gifBuf = ctx.gifBuf;
             if (!gifBuf) {
@@ -3167,10 +3173,10 @@ client.on("interactionCreate", async (interaction) => {
             const tmpGif = `/tmp/nemoclaw-igimg-in-${tag}.gif`;
             fs.writeFileSync(tmpGif, gifBuf);
             execSync(`"${ffmpeg}" -y -i ${tmpGif} -vf "select=eq(n\\,0),scale=1080:-2:flags=lanczos" -frames:v 1 -q:v 2 ${tmpJpg}`, { timeout: 15000 });
-            try { fs.unlinkSync(tmpGif); } catch {}
+            try { fs.unlinkSync(tmpGif); } catch { /* ignored */ }
           }
           const jpgBuf = fs.readFileSync(tmpJpg);
-          try { fs.unlinkSync(tmpJpg); } catch {}
+          try { fs.unlinkSync(tmpJpg); } catch { /* ignored */ }
           await interaction.editReply("⏳ Uploading to Instagram as image...");
           const results = await postToBuffer({ text: "#AI #GenerativeArt #Loop", mediaBuffer: jpgBuf, mimeType: "image/jpeg", channels: ["instagram"] });
           const ok = results.filter(r => !r.error);
@@ -3209,7 +3215,7 @@ client.on("interactionCreate", async (interaction) => {
             // Scale to min 540px wide (IG Reels minimum), ensure even dims
             execSync(`"${ffmpeg}" -y ${ss} ${durFlag} -i ${tmpIn} -vf "scale='max(540,iw)':-2:flags=lanczos,fps=30" -c:v libx264 -crf 23 -preset fast -pix_fmt yuv420p -movflags +faststart ${tmpOut}`, { timeout: 60000 });
             const mp4Buf = fs.readFileSync(tmpOut);
-            try { fs.unlinkSync(tmpIn); fs.unlinkSync(tmpOut); } catch {}
+            try { fs.unlinkSync(tmpIn); fs.unlinkSync(tmpOut); } catch { /* ignored */ }
             const sizeMB = (mp4Buf.length / 1024 / 1024).toFixed(1);
             console.log(`[postigreel] prepared mp4 (${sizeMB}MB) for IG`);
             await interaction.editReply("⏳ Uploading to Instagram as Reel...");
@@ -3225,7 +3231,7 @@ client.on("interactionCreate", async (interaction) => {
             // IG Reels require ≥23fps; scale to min 540px wide; loop GIF to reach 10s
             execSync(`"${ffmpeg}" -y -stream_loop 20 -i ${tmpGif} -vf "scale='max(540,iw)':-2:flags=lanczos,fps=30" -c:v libx264 -crf 23 -preset fast -pix_fmt yuv420p -t 10 -movflags +faststart ${tmpOut}`, { timeout: 30000 });
             const mp4Buf = fs.readFileSync(tmpOut);
-            try { fs.unlinkSync(tmpGif); fs.unlinkSync(tmpOut); } catch {}
+            try { fs.unlinkSync(tmpGif); fs.unlinkSync(tmpOut); } catch { /* ignored */ }
             const sizeMB = (mp4Buf.length / 1024 / 1024).toFixed(1);
             console.log(`[postigreel] converted GIF → MP4 (${sizeMB}MB)`);
             await interaction.editReply("⏳ Uploading to Instagram as Reel...");
@@ -3271,7 +3277,7 @@ client.on("interactionCreate", async (interaction) => {
               { timeout: 60000 }
             );
             mp4Buf = fs.readFileSync(tmpOut);
-            try { fs.unlinkSync(tmpIn); fs.unlinkSync(tmpOut); } catch {}
+            try { fs.unlinkSync(tmpIn); fs.unlinkSync(tmpOut); } catch { /* ignored */ }
           }
 
           const sizeMB  = (mp4Buf.length / 1024 / 1024).toFixed(1);
@@ -3307,7 +3313,7 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply(`✨ Enhanced prompt:\n> *${enhanced.slice(0, 200)}*\n\n🎬 Rendering... ${queue.total > 0 ? `(${queue.total} in queue)` : ""}`);
           const buf = ctx.imageBuf || lastGeneratedImageBuffer;
           const videoBuf = await generateVideoWithComfyUI(enhanced, buf);
-          lastVideoBuffer = videoBuf; lastVideoSetAt = Date.now(); lastVideoMime = "video/mp4"; try { fs.writeFileSync("/tmp/last_generated_video.mp4", videoBuf); } catch {} backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4");
+          lastVideoBuffer = videoBuf; lastVideoSetAt = Date.now(); lastVideoMime = "video/mp4"; try { fs.writeFileSync("/tmp/last_generated_video.mp4", videoBuf); } catch { /* ignored */ } backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4");
           addSegment(rootId, videoBuf);
           generationContext.set(interaction.message.id, { ...ctx, prompt: enhanced, videoBuf, type: "video", rootId });
           const tmpVid = `/tmp/nemoclaw-enhance-vid-${Date.now()}.mp4`;
@@ -3470,7 +3476,7 @@ client.on("interactionCreate", async (interaction) => {
             videoBuf = await generateVideoWithComfyUI(nextPrompt, firstFrame);
           }
 
-          lastVideoBuffer = videoBuf; lastVideoSetAt = Date.now(); lastVideoMime = "video/mp4"; try { fs.writeFileSync("/tmp/last_generated_video.mp4", videoBuf); } catch {} backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4");
+          lastVideoBuffer = videoBuf; lastVideoSetAt = Date.now(); lastVideoMime = "video/mp4"; try { fs.writeFileSync("/tmp/last_generated_video.mp4", videoBuf); } catch { /* ignored */ } backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4");
           lastGeneratedImageBuffer = null;
           // Track segment BEFORE building buttons so stitch count is current
           addSegment(rootId, videoBuf);
@@ -3732,9 +3738,10 @@ client.on("interactionCreate", async (interaction) => {
           lastVideoBuffer = result.videoBuffer; lastVideoSetAt = Date.now();
           lastVideoMime = "video/mp4";
           generationContext.set(interaction.id, { type: "video", videoBuf: result.videoBuffer, prompt: `${preset} ${style} edit` });
-          try { fs.unlinkSync(tmpOut); } catch {}
+          try { fs.unlinkSync(tmpOut); } catch { /* ignored */ }
         } catch (e) {
           console.error("[edit/create] failed:", e);
+          reportGenEvent({ type: GenType.FFMPEG_EDIT, status: GenStatus.ERROR, error: e, userId: interaction.user?.id, userName: interaction.user?.username, context: { preset, style, beattrack, lyrics, mediaCount: images.length + videos.length } });
           await interaction.editReply(`❌ Edit failed: ${e.message.slice(0, 300)}`);
         }
         return;
@@ -3957,7 +3964,7 @@ client.on("interactionCreate", async (interaction) => {
           const imageBufs = localPaths.map(p => fs.readFileSync(p));
           lastGeneratedImageBuffer = imageBufs[0]; lastImageSetAt = Date.now();
           backupMedia(imageBufs[0], `grok-${Date.now()}.png`, "image/png");
-          const replyMsg = await interaction.editReply({
+          const _replyMsg = await interaction.editReply({
             content: `✨ *"${prompt.slice(0, 80)}"* — **Grok Aurora** — pick an image:`,
             files: localPaths.map(p => new AttachmentBuilder(p)),
             components: grokGridButtons(interaction.id, localPaths.length),
@@ -3970,7 +3977,7 @@ client.on("interactionCreate", async (interaction) => {
           fs.writeFileSync(tmpPath, imgBuf);
           lastGeneratedImageBuffer = imgBuf; lastImageSetAt = Date.now();
           backupMedia(imgBuf, `zturbo-${Date.now()}.png`, "image/png");
-          const replyMsg = await interaction.editReply({
+          const _replyMsg = await interaction.editReply({
             content: `⚡ *"${prompt.slice(0, 80)}"* — **ZImage Turbo**`,
             files: [new AttachmentBuilder(tmpPath, { name: "zturbo.png" })],
             components: [imageButtons(interaction.id)],
@@ -3987,7 +3994,7 @@ client.on("interactionCreate", async (interaction) => {
             if (localPath) {
               lastGeneratedImageBuffer = fs.readFileSync(localPath); lastImageSetAt = Date.now();
               const modelName = extractModelName(response);
-              const replyMsg = await interaction.editReply({ content: `🎨 *"${prompt.slice(0, 80)}"* — **${modelName}**`, files: [new AttachmentBuilder(localPath)], components: [imageButtons(interaction.id)] });
+              const _replyMsg = await interaction.editReply({ content: `🎨 *"${prompt.slice(0, 80)}"* — **${modelName}**`, files: [new AttachmentBuilder(localPath)], components: [imageButtons(interaction.id)] });
               generationContext.set(interaction.id, { prompt, imageBuf: lastGeneratedImageBuffer, type: "image" });
               fs.unlinkSync(localPath);
               return;
@@ -4122,7 +4129,7 @@ client.on("interactionCreate", async (interaction) => {
           const imgAtt = interaction.message?.attachments?.find(a =>
             /\.(png|jpg|jpeg|webp)$/i.test(a.name || "") || (a.contentType || "").startsWith("image/"));
           if (imgAtt?.url) {
-            try { buf = await fetch(imgAtt.url).then(r => r.arrayBuffer()).then(b => Buffer.from(b)); } catch {}
+            try { buf = await fetch(imgAtt.url).then(r => r.arrayBuffer()).then(b => Buffer.from(b)); } catch { /* ignored */ }
           }
         }
         if (!buf) { await interaction.reply({ content: "⚠️ Image not found — generate a new one.", ephemeral: true }); return; }
@@ -4142,7 +4149,7 @@ client.on("interactionCreate", async (interaction) => {
             const queue = await getComfyQueueStatus();
             await interaction.editReply(`✨ Enhanced:\n> *${enhanced.slice(0, 200)}*\n\n🎬 Rendering ${durationSec}s... ${queue.total > 0 ? `(${queue.total} in queue)` : ""}`);
             const videoBuf = await generateVideoWithComfyUI(enhanced, buf, durationSec);
-            lastVideoBuffer = videoBuf; lastVideoSetAt = Date.now(); lastVideoMime = "video/mp4"; try { fs.writeFileSync("/tmp/last_generated_video.mp4", videoBuf); } catch {} backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4");
+            lastVideoBuffer = videoBuf; lastVideoSetAt = Date.now(); lastVideoMime = "video/mp4"; try { fs.writeFileSync("/tmp/last_generated_video.mp4", videoBuf); } catch { /* ignored */ } backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4");
             addSegment(rootId, videoBuf);
             generationContext.set(interaction.message.id, { ...ctx, prompt: enhanced, videoBuf, type: "video", rootId });
             const tmpVid = `/tmp/nemoclaw-enhance-vid-${Date.now()}.mp4`;
@@ -4162,7 +4169,7 @@ client.on("interactionCreate", async (interaction) => {
             const queue = await getComfyQueueStatus();
             await interaction.editReply(`🎬 Making ${durationSec}s video from image... ${queue.total > 0 ? `(${queue.total} in queue)` : ""}`);
             const videoBuf = await generateVideoWithComfyUI(ctx.prompt || "cinematic motion, smooth camera movement", buf, durationSec);
-            lastVideoBuffer = videoBuf; lastVideoSetAt = Date.now(); lastVideoMime = "video/mp4"; try { fs.writeFileSync("/tmp/last_generated_video.mp4", videoBuf); } catch {} backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4");
+            lastVideoBuffer = videoBuf; lastVideoSetAt = Date.now(); lastVideoMime = "video/mp4"; try { fs.writeFileSync("/tmp/last_generated_video.mp4", videoBuf); } catch { /* ignored */ } backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4");
             addSegment(rootId, videoBuf);
             generationContext.set(interaction.message.id, { ...ctx, videoBuf, type: "video", rootId });
             const tmpVid = `/tmp/nemoclaw-btn-vid-${Date.now()}.mp4`;
@@ -4210,7 +4217,7 @@ client.on("interactionCreate", async (interaction) => {
           });
           const replyId = replyMsg.id;
           generationContext.set(replyId, { ...ctx, gifBuf, gifStartSec: startSec, gifDurSec: durSec, type: "gif" });
-          try { fs.unlinkSync(tmpIn); fs.unlinkSync(tmpPalette); fs.unlinkSync(tmpOut); } catch {}
+          try { fs.unlinkSync(tmpIn); fs.unlinkSync(tmpPalette); fs.unlinkSync(tmpOut); } catch { /* ignored */ }
           console.log(`[gif] created ${sizeMB}MB GIF from ${startSec}s for ${durSec}s`);
         } catch (e) {
           console.error(`[gif] failed: ${e.message}`);
@@ -4224,7 +4231,7 @@ client.on("interactionCreate", async (interaction) => {
       if (grokEditMatch) {
         const idx = parseInt(grokEditMatch[1]);
         const origMsgId = grokEditMatch[2];
-        const ctx = generationContext.get(origMsgId) || generationContext.get(interaction.message?.id) || {};
+        const _ctx = generationContext.get(origMsgId) || generationContext.get(interaction.message?.id) || {};
         const newPrompt = interaction.fields.getTextInputValue("grok_prompt");
         await interaction.deferReply();
         await interaction.editReply(`🎨 Regenerating image ${idx + 1}: *"${newPrompt.slice(0, 60)}"*...`);
@@ -4444,7 +4451,7 @@ client.on("interactionCreate", async (interaction) => {
             videoBuf = await generateVideoWithComfyUI(userPrompt, firstFrame);
           }
 
-          lastVideoBuffer = videoBuf; lastVideoSetAt = Date.now(); lastVideoMime = "video/mp4"; try { fs.writeFileSync("/tmp/last_generated_video.mp4", videoBuf); } catch {} backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4");
+          lastVideoBuffer = videoBuf; lastVideoSetAt = Date.now(); lastVideoMime = "video/mp4"; try { fs.writeFileSync("/tmp/last_generated_video.mp4", videoBuf); } catch { /* ignored */ } backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4");
           lastGeneratedImageBuffer = null;
           const tmpVid = `/tmp/nemoclaw-chain-custom-${Date.now()}.mp4`;
           fs.writeFileSync(tmpVid, videoBuf);
@@ -4572,6 +4579,7 @@ client.on("interactionCreate", async (interaction) => {
         }
       } catch (e) {
         console.error(`[${cmd}] error:`, e.message);
+        reportGenEvent({ type: isVid ? GenType.GROK_IMG2VID : GenType.GROK_IMG2IMG, status: GenStatus.ERROR, error: e, userId: interaction.user?.id, userName: interaction.user?.username, context: { prompt, model: cmd } });
         await interaction.editReply(`⚠️ Grok error: ${e.message.slice(0, 200)}`);
       }
       return;
@@ -4594,7 +4602,7 @@ client.on("interactionCreate", async (interaction) => {
         backupMedia(imgBuf, `grok-${Date.now()}.png`, "image/png");
         const imageBufs = localPaths.map(p => fs.readFileSync(p));
         const files = localPaths.map(p => new AttachmentBuilder(p));
-        const replyMsg = await interaction.editReply({
+        const _replyMsg = await interaction.editReply({
           content: `🤖 *"${prompt.slice(0, 80)}"* — **Grok Aurora** — pick an image:`,
           files,
           components: grokGridButtons(interaction.id, localPaths.length),
@@ -4603,6 +4611,7 @@ client.on("interactionCreate", async (interaction) => {
         localPaths.forEach(p => fs.unlink(p, () => {}));
       } catch (e) {
         console.error("[grok] slash handler error:", e.message);
+        reportGenEvent({ type: GenType.GROK_IMAGE, status: GenStatus.ERROR, error: e, userId: interaction.user?.id, userName: interaction.user?.username, context: { prompt, model: "grok-aurora" } });
         await interaction.editReply(`⚠️ Grok error: ${e.message.slice(0, 200)}`);
       }
       return;
@@ -4635,7 +4644,7 @@ client.on("interactionCreate", async (interaction) => {
         if (localPath) {
           lastGeneratedImageBuffer = fs.readFileSync(localPath); lastImageSetAt = Date.now();
           const modelName = extractModelName(response);
-          const reply = await interaction.editReply({ content: `🎨 *"${prompt.slice(0, 80)}"* — **${modelName}**`, files: [new AttachmentBuilder(localPath)], components: [imageButtons(interaction.id)] });
+          const _reply = await interaction.editReply({ content: `🎨 *"${prompt.slice(0, 80)}"* — **${modelName}**`, files: [new AttachmentBuilder(localPath)], components: [imageButtons(interaction.id)] });
           generationContext.set(interaction.id, { prompt, ratio, imageBuf: lastGeneratedImageBuffer, type: "image" });
           fs.unlinkSync(localPath);
           return;
@@ -4678,6 +4687,7 @@ client.on("interactionCreate", async (interaction) => {
         fs.unlinkSync(tmpPath);
       } catch (e) {
         console.error("[zturbo] failed:", e.message);
+        reportGenEvent({ type: GenType.ZTURBO, status: GenStatus.ERROR, error: e, userId: interaction.user?.id, userName: interaction.user?.username, context: { prompt, style, seed } });
         await interaction.editReply(`❌ ZTurbo failed: ${e.message.slice(0, 200)}`);
       }
       return;
@@ -4693,7 +4703,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply(`🎬 Rendering T2V: *"${prompt.slice(0, 60)}"*... ${queue.total > 0 ? `(${queue.total} in queue)` : ""}`);
       try {
         const videoBuf = await generateVideoWithComfyUI(prompt, null);
-        lastVideoBuffer = videoBuf; lastVideoSetAt = Date.now(); lastVideoMime = "video/mp4"; try { fs.writeFileSync("/tmp/last_generated_video.mp4", videoBuf); } catch {} backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4"); lastGeneratedImageBuffer = null;
+        lastVideoBuffer = videoBuf; lastVideoSetAt = Date.now(); lastVideoMime = "video/mp4"; try { fs.writeFileSync("/tmp/last_generated_video.mp4", videoBuf); } catch { /* ignored */ } backupMedia(videoBuf, `vid-${Date.now()}.mp4`, "video/mp4"); lastGeneratedImageBuffer = null;
         addSegment(interaction.id, videoBuf);
         generationContext.set(interaction.id, { prompt, videoBuf, type: "video", rootId: interaction.id });
         const tmpVid = `/tmp/nemoclaw-slash-vid-${Date.now()}.mp4`;
@@ -4819,6 +4829,7 @@ client.on("interactionCreate", async (interaction) => {
         generationContext.set(interaction.id, { prompt: tags, audioBuf, type: "music" });
         fs.unlinkSync(tmpMp3);
       } catch (e) {
+        reportGenEvent({ type: GenType.ACESTEP_MUSIC, status: GenStatus.ERROR, error: e, userId: interaction.user?.id, userName: interaction.user?.username, context: { prompt } });
         await interaction.editReply(`Music generation failed: ${e.message.slice(0, 200)}`);
       }
       return;
@@ -4863,11 +4874,12 @@ client.on("interactionCreate", async (interaction) => {
           const replyFn = i === 0 ? interaction.editReply.bind(interaction) : interaction.followUp.bind(interaction);
           await replyFn({ content, files: [new AttachmentBuilder(tmpMp3, { name: "suno.mp3" })], components: [musicButtons(ctxKey)] });
           generationContext.set(ctxKey, { prompt, audioBuf, type: "suno", clipId: track.id, trackTitle: track.title });
-          try { fs.unlinkSync(tmpMp3); } catch {}
+          try { fs.unlinkSync(tmpMp3); } catch { /* ignored */ }
           backupMedia(audioBuf, `suno-${Date.now()}.mp3`, "audio/mpeg");
         }
       } catch (e) {
         console.error(`[suno] failed: ${e.message}`);
+        reportGenEvent({ type: GenType.SUNO_MUSIC, status: GenStatus.ERROR, error: e, userId: interaction.user?.id, userName: interaction.user?.username, context: { prompt } });
         await interaction.editReply(`⚠️ Suno generation failed: ${e.message.slice(0, 200)}`);
       }
       return;
@@ -4908,7 +4920,7 @@ client.on("interactionCreate", async (interaction) => {
 
         const outBuf  = fs.readFileSync(tmpOut);
         const outName = (videoAtt.name || "combined").replace(/\.\w+$/, "") + "-combined.mp4";
-        [tmpVid, tmpAud, tmpOut].forEach(f => { try { fs.unlinkSync(f); } catch {} });
+        [tmpVid, tmpAud, tmpOut].forEach(f => { try { fs.unlinkSync(f); } catch { /* ignored */ } });
 
         await interaction.editReply({
           content: `🎬🎵 Audio replaced — video length preserved`,
@@ -5216,9 +5228,10 @@ client.on("interactionCreate", async (interaction) => {
         lastVideoBuffer = result.videoBuffer; lastVideoSetAt = Date.now();
         lastVideoMime = "video/mp4";
         generationContext.set(interaction.id, { type: "video", videoBuf: result.videoBuffer, prompt: caption || `${preset} ${style} edit` });
-        try { fs.unlinkSync(tmpOut); } catch {}
+        try { fs.unlinkSync(tmpOut); } catch { /* ignored */ }
       } catch (e) {
         console.error("[edit-go] failed:", e);
+        reportGenEvent({ type: GenType.FFMPEG_EDIT, status: GenStatus.ERROR, error: e, userId: interaction.user?.id, userName: interaction.user?.username, context: { preset, style, beattrack, lyrics, mediaCount: images.length + videos.length } });
         await interaction.editReply(`❌ Edit failed: ${e.message.slice(0, 300)}`);
       }
       return;
@@ -5278,6 +5291,7 @@ client.on("interactionCreate", async (interaction) => {
           images, videos, audioBuffer: audios[0] || null,
           preset, style: effectiveStyle, caption, lyrics, lyricsStyle,
           customAr, autoAspect: !userPickedPreset && !customAr,
+          stretch: interaction.options.getBoolean("stretch") ?? false,
         });
 
         const tmpOut = `/tmp/edit-out-${Date.now()}.mp4`;
@@ -5294,7 +5308,7 @@ client.on("interactionCreate", async (interaction) => {
         lastVideoBuffer = result.videoBuffer; lastVideoSetAt = Date.now();
         lastVideoMime = "video/mp4";
         generationContext.set(interaction.id, { type: "video", videoBuf: result.videoBuffer, prompt: caption || `${preset} ${style} edit` });
-        try { fs.unlinkSync(tmpOut); } catch {}
+        try { fs.unlinkSync(tmpOut); } catch { /* ignored */ }
       } catch (e) {
         console.error("[edit] failed:", e);
         await interaction.editReply(`❌ Edit failed: ${e.message.slice(0, 300)}`);
@@ -5383,6 +5397,7 @@ client.on("interactionCreate", async (interaction) => {
         generationContext.set(interaction.id, { type: "capcut", draftUrl: result.draftUrl, prompt: caption || `${preset} ${style} capcut` });
       } catch (e) {
         console.error("[capcut] failed:", e);
+        reportGenEvent({ type: GenType.CAPCUT_COMPOSE, status: GenStatus.ERROR, error: e, userId: interaction.user?.id, userName: interaction.user?.username, context: { preset, style, beattrack, lyrics, renderMode } });
         await interaction.editReply(`❌ CapCut failed: ${e.message.slice(0, 300)}`);
       }
       return;
@@ -5498,7 +5513,7 @@ async function waitForResult(taskId, timeoutMs = 30000) {
               resolve(result);
               return;
             }
-          } catch (e) {
+          } catch (_e) {
             // Skip malformed lines
           }
         }
@@ -5524,7 +5539,7 @@ async function waitForResult(taskId, timeoutMs = 30000) {
  * @param {number} timeoutMs — Timeout
  * @returns {object} Result or null if timeout/error
  */
-async function submitAndWait(type, payload, timeoutMs = 30000) {
+async function _submitAndWait(type, payload, timeoutMs = 30000) {
   try {
     const taskId = submitTask(type, payload);
     const result = await waitForResult(taskId, timeoutMs);
@@ -5553,7 +5568,7 @@ client.on("messageCreate", async (msg) => {
     const PRESET_NAMES = ["short", "short-long", "full", "full-long", "vertical", "vertical-long"];
     const STYLE_NAMES = ["cinematic", "vibrant", "moody", "vintage", "dark", "dreamy", "bright", "clean", "brainslop", "ludicrous", "glitchpunk", "neondream", "weatherwitch", "retrofuture", "motionsick", "animecore", "goldenhour", "splitreality", "16bit-spiritual"];
     const LYRICS_STYLES = ["karaoke", "subtitles", "viral"];
-    let preset = "short", style = "cinematic", captionParts = [], lyrics = false, lyricsStyle = "karaoke", beattrack = false;
+    let preset = "short", style = "cinematic", captionParts = [], lyrics = false, lyricsStyle = "karaoke", beattrack = false, stretch = false;
     let userPickedPreset = false, customAr = undefined;
     for (const arg of args) {
       const lower = arg.toLowerCase();
@@ -5562,6 +5577,7 @@ client.on("messageCreate", async (msg) => {
       else if (lower === "lyrics" || lower === "lyric") lyrics = true;
       else if (LYRICS_STYLES.includes(lower)) { lyrics = true; lyricsStyle = lower; }
       else if (lower === "beattrack" || lower === "beat" || lower === "beats") beattrack = true;
+      else if (lower === "stretch") stretch = true;
       else if (/^\d+:\d+$/.test(lower)) customAr = lower;  // Custom aspect ratio (e.g. 4:3, 1:1, 21:9)
       else captionParts.push(arg);
     }
@@ -5610,7 +5626,7 @@ client.on("messageCreate", async (msg) => {
 
     try {
       const { editVideo } = require("./lib/video-editor");
-      const result = await editVideo({ images, videos, audioBuffer: audios[0] || null, preset, style, caption, lyrics, lyricsStyle, customAr, autoAspect: !userPickedPreset && !customAr });
+      const result = await editVideo({ images, videos, audioBuffer: audios[0] || null, preset, style, caption, lyrics, lyricsStyle, customAr, autoAspect: !userPickedPreset && !customAr, stretch });
       const tmpOut = `/tmp/edit-msg-${Date.now()}.mp4`;
       fs.writeFileSync(tmpOut, result.videoBuffer);
       const sizeMB = (result.videoBuffer.length / 1024 / 1024).toFixed(1);
@@ -5627,7 +5643,7 @@ client.on("messageCreate", async (msg) => {
           console.warn("[!edit] GDrive failed, trying Catbox:", uploadErr.message);
           try { videoUrl = await getPublicMediaUrl(result.videoBuffer, "video/mp4"); } catch { videoUrl = null; }
         }
-        try { fs.unlinkSync(tmpOut); } catch {}
+        try { fs.unlinkSync(tmpOut); } catch { /* ignored */ }
         if (videoUrl) {
           await progressMsg.edit({ content: `🎬 **Edited** — ${durStr}s ${preset} *(${style}, ${sizeMB}MB)*\n${videoUrl}`, components: videoButtons(progressMsg.id) });
         } else {
@@ -5639,7 +5655,7 @@ client.on("messageCreate", async (msg) => {
           files: [new AttachmentBuilder(tmpOut, { name: `edit-${preset}.mp4` })],
           components: videoButtons(progressMsg.id),
         });
-        try { fs.unlinkSync(tmpOut); } catch {}
+        try { fs.unlinkSync(tmpOut); } catch { /* ignored */ }
       }
       lastVideoBuffer = result.videoBuffer; lastVideoSetAt = Date.now();
       lastVideoMime = "video/mp4";
@@ -5814,7 +5830,7 @@ client.on("messageCreate", async (msg) => {
     const STYLE_NAMES = ["cinematic", "vibrant", "moody", "vintage", "dark", "dreamy", "bright", "clean", "brainslop", "ludicrous", "glitchpunk", "neondream", "weatherwitch", "retrofuture", "motionsick", "animecore", "goldenhour", "splitreality", "16bit-spiritual"];
     const LYRICS_STYLES = ["karaoke", "subtitles", "viral"];
 
-    let preset = "short", style = "cinematic", captionParts = [], lyrics = false, lyricsStyle = "karaoke", beattrack = false, renderMode = "draft", customAr = undefined;
+    let preset = "short", style = "cinematic", captionParts = [], lyrics = false, lyricsStyle = "karaoke", beattrack = false, renderMode = "draft", customAr = undefined, _stretch = false;
     for (const arg of args) {
       const lower = arg.toLowerCase();
       if (PRESET_NAMES.includes(lower)) preset = lower;
@@ -5822,6 +5838,7 @@ client.on("messageCreate", async (msg) => {
       else if (lower === "lyrics" || lower === "lyric") lyrics = true;
       else if (LYRICS_STYLES.includes(lower)) { lyrics = true; lyricsStyle = lower; }
       else if (lower === "beattrack" || lower === "beat" || lower === "beats") beattrack = true;
+      else if (lower === "stretch") _stretch = true;
       else if (lower === "render:desktop" || lower === "desktop") renderMode = "desktop";
       else if (lower === "render:draft" || lower === "draft") renderMode = "draft";
       else if (/^\d+:\d+$/.test(lower)) customAr = lower;
@@ -5890,6 +5907,7 @@ client.on("messageCreate", async (msg) => {
       generationContext.set(progressMsg.id, { type: "capcut", draftUrl: result.draftUrl, prompt: caption || `${preset} ${style} capcut` });
     } catch (e) {
       console.error("[!capcut] failed:", e);
+      reportGenEvent({ type: GenType.CAPCUT_COMPOSE, status: GenStatus.ERROR, error: e, userId: msg.author?.id, userName: msg.author?.username, context: { preset, style, beattrack, lyrics, renderMode } });
       await progressMsg.edit(`❌ CapCut failed: ${e.message.slice(0, 300)}`);
     }
     return;
@@ -5949,7 +5967,7 @@ client.on("messageCreate", async (msg) => {
     try {
       const response = await runAgentInSandbox(prompt, msg.id + "-roast");
       if (response) await msg.reply(response);
-    } catch {} finally { roastAgentBusy.delete(msg.author.id); }
+    } catch { /* ignored */ } finally { roastAgentBusy.delete(msg.author.id); }
     return;
   }
 
@@ -5962,7 +5980,7 @@ client.on("messageCreate", async (msg) => {
     (async () => {
       try {
         let gifUrl = userGifUrl;
-        const isMp4 = /\.mp4(\?|$)/i.test(gifUrl);
+        const _isMp4 = /\.mp4(\?|$)/i.test(gifUrl);
 
         // Tenor page URL → resolve to actual c.tenor.com GIF URL
         if (/tenor\.com\/view\//i.test(gifUrl)) {
@@ -6034,7 +6052,7 @@ client.on("messageCreate", async (msg) => {
               { timeout: 120000 }
             );
             const outBuf = fs.readFileSync(tmpOut);
-            [tmpVid, tmpAud, tmpOut].forEach(f => { try { fs.unlinkSync(f); } catch {} });
+            [tmpVid, tmpAud, tmpOut].forEach(f => { try { fs.unlinkSync(f); } catch { /* ignored */ } });
             const sizeMB  = (outBuf.length / 1024 / 1024).toFixed(1);
             const ctxKey  = `combined-${ts}`;
             generationContext.set(ctxKey, { gifMp4Buf: outBuf, type: "mp4" });
@@ -6156,6 +6174,7 @@ client.on("messageCreate", async (msg) => {
     } catch (e) {
       clearInterval(typingInterval);
       console.error("[grok] handler error:", e.message);
+      reportGenEvent({ type: GenType.GROK_IMAGE, status: GenStatus.ERROR, error: e, userId: msg.author?.id, userName: msg.author?.username, context: { prompt, model: "grok-aurora" } });
       await msg.reply(`⚠️ Grok error: ${e.message.slice(0, 200)}`);
     }
     return;
@@ -6258,7 +6277,7 @@ client.on("messageCreate", async (msg) => {
   try {
     const fileContent = fs.readFileSync(DEDUP_FILE, "utf8");
     if (fileContent.includes(msg.id)) { health.dedups++; diag("dedup", { id: msg.id, reason: "file_check" }); console.log(`[dedup] blocked by file: ${msg.id}`); processedMessages.add(msg.id); return; }
-  } catch {}
+  } catch { /* ignored */ }
   // ── Stale message filter (gateway reconnect replays) ──────────────
   const msgAge = Date.now() - msg.createdTimestamp;
   if (msgAge > 120000) { health.dedups++; diag("dedup", { id: msg.id, reason: "stale", ageMs: msgAge }); console.log(`[dedup] blocked stale: ${msg.id} (${Math.round(msgAge/1000)}s old)`); return; }
@@ -6274,7 +6293,7 @@ client.on("messageCreate", async (msg) => {
     return;
   }
   processedMessages.add(msg.id);
-  try { fs.appendFileSync(DEDUP_FILE, msg.id + "\n"); } catch {}
+  try { fs.appendFileSync(DEDUP_FILE, msg.id + "\n"); } catch { /* ignored */ }
   // Track content for content-based dedup (5 min window, auto-cleanup)
   if (!global._contentDedup) global._contentDedup = new Map();
   global._contentDedup.set(contentKey, Date.now());
@@ -6283,7 +6302,7 @@ client.on("messageCreate", async (msg) => {
     for (const [k, v] of global._contentDedup) { if (v < cutoff) global._contentDedup.delete(k); }
   }
   // Persist content dedup to disk so restarts don't lose it
-  try { fs.writeFileSync(CONTENT_DEDUP_FILE, JSON.stringify([...global._contentDedup])); } catch {}
+  try { fs.writeFileSync(CONTENT_DEDUP_FILE, JSON.stringify([...global._contentDedup])); } catch { /* ignored */ }
   setTimeout(() => processedMessages.delete(msg.id), 600000);
 
   const _mt = new MsgTimer(msg.id, msg.author.id, msg.content);
@@ -6390,7 +6409,7 @@ client.on("messageCreate", async (msg) => {
       memoryContext = `[Crew memory context for @${msg.author.username}:\n` +
         topMems.map(m => `- [${m.source || "pipes"}] ${m.text}`).join("\n") + "]\n";
     }
-  } catch {}
+  } catch { /* ignored */ }
 
   // ── Assemble MaoMao correction context ─────────────────────────────
   let correctionsContext = "";
@@ -6407,7 +6426,7 @@ client.on("messageCreate", async (msg) => {
         corrections.map(c => `- ${c.text}`).join("\n") + "]\n";
       console.log(`[crew-correction] injecting ${corrections.length} corrections`);
     }
-  } catch {}
+  } catch { /* ignored */ }
 
   // ── Assemble vertex search context ───────────────────────────────
   let vertexSearchContext = "";
@@ -6600,7 +6619,7 @@ Output ONLY the JSON object. No markdown, no explanation.`;
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
         if (parsed.prompt) ztPrompt = parsed.prompt;
-        if (parsed.style && ZTURBO_STYLES.hasOwnProperty(parsed.style)) ztStyle = parsed.style;
+        if (parsed.style && Object.prototype.hasOwnProperty.call(ZTURBO_STYLES, parsed.style)) ztStyle = parsed.style;
       }
     } catch (e) { console.warn("[zturbo-intercept] Candy prompt failed, using fallback:", e.message); }
     const ztSeed = Math.floor(Math.random() * 2147483647);
@@ -6621,6 +6640,7 @@ Output ONLY the JSON object. No markdown, no explanation.`;
       postCrewReactions(msg, fullMessage, `Generated ZTurbo image: "${ztPrompt.slice(0, 120)}"`).catch(() => {});
     } catch (e) {
       console.error("[zturbo-intercept] failed:", e.message);
+      reportGenEvent({ type: GenType.ZTURBO, status: GenStatus.ERROR, error: e, userId: msg.author?.id, userName: msg.author?.username, context: { prompt: ztPrompt, style: ztStyle, seed: ztSeed } });
       await statusMsg.edit(`❌ ZTurbo failed: ${e.message.slice(0, 200)}`);
     }
     return;
@@ -6692,12 +6712,12 @@ Output ONLY the JSON object. No markdown, no explanation.`;
       const reason = hallucinationHit ? String(hallucinationHit) : `structural (${boldNumberedItems} bold items + dramatic closer)`;
       console.warn(`[hallucination] blocked response: ${reason}`);
       // Clean up progress msg before replying to prevent double-post
-      if (progressMsg) { try { await progressMsg.delete(); } catch {} progressMsg = null; }
+      if (progressMsg) { try { await progressMsg.delete(); } catch { /* ignored */ } progressMsg = null; }
       // If we have real trend data, send it directly instead of error message
       if (trendData) {
         const top = trendData.topPosts.slice(0, 3);
         const hashtags = trendData.hashtags.slice(0, 8).join(" ");
-        const topPost = top[0] ? `"${top[0].text.slice(0, 120)}"` : "";
+        const _topPost = top[0] ? `"${top[0].text.slice(0, 120)}"` : "";
         const formatted = [
           `📊 **Trending now** (live from trends):`,
           hashtags ? `**Hashtags:** ${hashtags}` : "",
@@ -6770,7 +6790,7 @@ Output ONLY the JSON object. No markdown, no explanation.`;
           lastVideoBuffer = vidBuf; lastVideoSetAt = Date.now();
           generationContext.set(statusMsg.id, { type: "video", videoBuf: vidBuf });
           fs.unlinkSync(tmpOut);
-          for (const p of videoPaths) { if (p.includes("capcut-input-")) try { fs.unlinkSync(p); } catch {} }
+          for (const p of videoPaths) { if (p.includes("capcut-input-")) try { fs.unlinkSync(p); } catch { /* ignored */ } }
         } catch (e) {
           console.error("[compose] failed:", e.message);
           await statusMsg.edit(`❌ Video compose failed: ${e.message.slice(0, 200)}`);
@@ -7104,7 +7124,7 @@ Output ONLY the JSON object. No markdown, no explanation.`;
         const tmpPath = `/tmp/zturbo-agent-${Date.now()}.png`;
         fs.writeFileSync(tmpPath, imgBuf);
         lastGeneratedImageBuffer = imgBuf; lastImageSetAt = Date.now();
-        const replyMsg = await msg.reply({
+        const _replyMsg = await msg.reply({
           content: `⚡ *"${ztPrompt.slice(0, 80)}"*${styleLabel} *(ZImage Turbo)*`,
           files: [new AttachmentBuilder(tmpPath, { name: "zturbo.png" })],
           components: [imageButtons(msg.id)],
@@ -7114,6 +7134,7 @@ Output ONLY the JSON object. No markdown, no explanation.`;
         console.log(`[zturbo] agent-triggered generation done — "${ztPrompt.slice(0, 60)}"`);
       } catch (e) {
         console.error("[zturbo] agent token failed:", e.message);
+        reportGenEvent({ type: GenType.ZTURBO, status: GenStatus.ERROR, error: e, userId: msg.author?.id, userName: msg.author?.username, context: { prompt: ztPrompt, style: ztStyle, seed: ztSeed } });
         await msg.reply(`❌ ZTurbo failed: ${e.message.slice(0, 200)}`);
       }
       mutableResponse = mutableResponse.replace(zturboMatch[0], "").trim();
@@ -7223,7 +7244,7 @@ Output ONLY the JSON object. No markdown, no explanation.`;
             const { execSync } = require("child_process");
             execSync(`cat "${tmpVid}" | ssh -T -F "${confP}" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null openshell-${SANDBOX} 'cat > /tmp/generated_video.mp4'`, { timeout: 30000 });
             fs.unlinkSync(confP); fs.rmdirSync(tmpConf);
-          } catch {}
+          } catch { /* ignored */ }
           addSegment(msg.id, videoBuf);
           generationContext.set(msg.id, { prompt: combiPrompt, videoBuf, type: "video", rootId: msg.id });
           const DISCORD_LIMIT_COMBI = 25 * 1024 * 1024;
@@ -7567,7 +7588,7 @@ Output ONLY the JSON object. No markdown, no explanation.`;
     // Priority 4: recover from disk
     if (hasMakeGif && !lastVideoBuffer) {
       for (const f of ["/tmp/input_video.mp4", "/tmp/last_generated_video.mp4"]) {
-        try { if (fs.existsSync(f)) { lastVideoBuffer = fs.readFileSync(f); lastVideoSetAt = Date.now(); console.log(`[gif] recovered ${lastVideoBuffer.length} bytes from ${f}`); break; } } catch {}
+        try { if (fs.existsSync(f)) { lastVideoBuffer = fs.readFileSync(f); lastVideoSetAt = Date.now(); console.log(`[gif] recovered ${lastVideoBuffer.length} bytes from ${f}`); break; } } catch { /* ignored */ }
       }
     }
     if (hasMakeGif && lastVideoBuffer) {
@@ -7595,7 +7616,7 @@ Output ONLY the JSON object. No markdown, no explanation.`;
           }
           console.log(`[gif] created ${sizeMB}MB GIF from [MAKE_GIF] token`);
           backupMedia(gifBuf, `gif-${Date.now()}.gif`, "image/gif");
-          try { fs.unlinkSync(tmpIn); fs.unlinkSync(tmpPalette); fs.unlinkSync(tmpOut); } catch {}
+          try { fs.unlinkSync(tmpIn); fs.unlinkSync(tmpPalette); fs.unlinkSync(tmpOut); } catch { /* ignored */ }
         } else {
           await msg.reply("⚠️ ffmpeg not found on host — can't create GIF right now.");
         }
@@ -7631,7 +7652,7 @@ Output ONLY the JSON object. No markdown, no explanation.`;
     if (textResponse) {
       // Always delete progress message first to prevent double-posting
       if (progressMsg) {
-        try { await progressMsg.delete(); } catch {}
+        try { await progressMsg.delete(); } catch { /* ignored */ }
         progressMsg = null;
       }
       for (let i = 0; i < textResponse.length; i += 1900) await msg.reply(textResponse.slice(i, i + 1900));
@@ -7642,14 +7663,14 @@ Output ONLY the JSON object. No markdown, no explanation.`;
       _mt.finish("ok");
     } else if (progressMsg) {
       // Agent produced no text response — delete the stale progress message
-      try { await progressMsg.delete(); } catch {}
+      try { await progressMsg.delete(); } catch { /* ignored */ }
       _mt.finish("empty");
     } else {
       _mt.finish("no_text");
     }
   } catch (err) {
     clearInterval(typingInterval);
-    if (progressMsg) { try { await progressMsg.delete(); } catch {} progressMsg = null; }
+    if (progressMsg) { try { await progressMsg.delete(); } catch { /* ignored */ } progressMsg = null; }
     _mt.finish("error");
     diag("error", { id: msg.id, err: err.message });
     await msg.reply(`Error: ${err.message}`);
@@ -7829,7 +7850,7 @@ function processCrewRemember(text, source, userId) {
 
 const isCriticalFeedback = bu.isCriticalFeedback;
 const shouldFireCrewReactions = bu.shouldFireCrewReactions;
-const isCreativeTask = bu.isCreativeTask;
+const _isCreativeTask = bu.isCreativeTask;
 const shouldGetCrewInput = bu.shouldGetCrewInput;
 
 // Pre-consult Candy and MaoMao before Pipes responds.

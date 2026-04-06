@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global fetch */
 /**
  * MaoMao — Architect Discord Agent
  * Validates outcomes, calculates odds, generates drops, audits logic
@@ -105,6 +106,16 @@ client.on("messageCreate", async (msg) => {
     return;
   }
 
+  if (userMsg === "!genstat" || userMsg === "!genstats") {
+    handleGenStats(msg);
+    return;
+  }
+
+  if (userMsg.startsWith("!generrors")) {
+    handleGenErrors(msg, userMsg.slice(10).trim());
+    return;
+  }
+
   // Respond if mentioned or addressed
   if (isMentioned || /\b(maomai|maomao)\b/i.test(userMsg)) {
     await msg.channel.sendTyping();
@@ -133,7 +144,7 @@ client.on("messageCreate", async (msg) => {
           memoryContext = `[Crew memory context for @${msg.author.username}:\n` +
             topMems.map(m => `- [${m.source || "maomai"}] ${m.text}`).join("\n") + "]\n";
         }
-      } catch {}
+      } catch { /* ignored */ }
 
       const response = await callDeepSeek(memoryContext + `[Discord User: @${msg.author.username}]\n` + userMsg);
       if (!response || !response.trim()) {
@@ -322,7 +333,7 @@ async function handleResultQuery(msg, taskId) {
           );
           return;
         }
-      } catch (e) {
+      } catch (_e) {
         // Skip malformed
       }
     }
@@ -387,7 +398,7 @@ async function waitForResult(taskId, timeoutMs = 30000) {
               resolve(result);
               return;
             }
-          } catch (e) {
+          } catch (_e) {
             // Skip malformed
           }
         }
@@ -472,7 +483,7 @@ NEVER fabricate data. NEVER invent fake system statuses. NEVER be dramatic. You'
               const delta = json.choices?.[0]?.delta;
               if (!delta) continue;
               if (delta.content) contentBuffer += delta.content;
-            } catch {}
+            } catch { /* ignored */ }
           }
         });
 
@@ -492,5 +503,132 @@ NEVER fabricate data. NEVER invent fake system statuses. NEVER be dramatic. You'
     req.end(payload);
   });
 }
+
+// ── Generation Monitor — MaoMao watches errors and analyzes patterns ────────
+
+const { getRecentEvents, getErrorSummary } = require("./lib/gen-monitor");
+
+/**
+ * !genstat — show generation health summary
+ */
+async function handleGenStats(msg) {
+  console.log(`[maomai] @${msg.author.username}: !genstat`);
+  try {
+    const summary = getErrorSummary(24);
+    if (summary.total === 0) {
+      await msg.reply("No generation events in the last 24h. Quiet day.");
+      return;
+    }
+    const successRate = summary.successes > 0
+      ? ((summary.successes / summary.total) * 100).toFixed(0)
+      : "0";
+    let report = `**Generation Stats (24h)**\n`;
+    report += `Total: ${summary.total} | OK: ${summary.successes} | Errors: ${summary.errors} | Timeouts: ${summary.timeouts} | Filtered: ${summary.filtered}\n`;
+    report += `Success rate: **${successRate}%**\n\n`;
+
+    const typeLines = Object.entries(summary.byType)
+      .sort((a, b) => b[1].fail - a[1].fail)
+      .map(([type, { ok, fail }]) => `\`${type}\`: ${ok} ok, ${fail} fail`);
+    if (typeLines.length) report += typeLines.join("\n");
+
+    await msg.reply(report);
+  } catch (e) {
+    console.error("[maomai] genstat error:", e.message);
+    await msg.reply(`Error reading gen stats: ${e.message.slice(0, 100)}`);
+  }
+}
+
+/**
+ * !generrors [type] — show recent generation errors, optionally filtered by type
+ */
+async function handleGenErrors(msg, typeFilter) {
+  console.log(`[maomai] @${msg.author.username}: !generrors ${typeFilter}`);
+  try {
+    const opts = { limit: 10, status: "error" };
+    if (typeFilter) opts.type = typeFilter;
+    const errors = getRecentEvents(opts);
+    if (errors.length === 0) {
+      await msg.reply(typeFilter ? `No recent errors for \`${typeFilter}\`.` : "No recent generation errors. Clean.");
+      return;
+    }
+
+    let report = `**Recent Errors${typeFilter ? ` (${typeFilter})` : ""}:**\n`;
+    for (const e of errors.slice(0, 5)) {
+      const ago = Math.round((Date.now() - new Date(e.t).getTime()) / 60000);
+      const prompt = e.context?.prompt ? `"${e.context.prompt.slice(0, 50)}"` : "";
+      report += `\`${e.type}\` ${ago}m ago — ${e.error?.slice(0, 120) || "unknown"} ${prompt}\n`;
+    }
+
+    // If 3+ errors of same type in last hour, add analysis
+    const lastHour = getRecentEvents({ limit: 50, status: "error", since: new Date(Date.now() - 3600000) });
+    const typeCounts = {};
+    for (const e of lastHour) typeCounts[e.type] = (typeCounts[e.type] || 0) + 1;
+    const hotSpots = Object.entries(typeCounts).filter(([, c]) => c >= 3);
+    if (hotSpots.length) {
+      report += `\n**Pattern alert:** `;
+      report += hotSpots.map(([t, c]) => `\`${t}\` failing ${c}x/hr`).join(", ");
+      // Ask MaoMao's LLM to analyze
+      const errorSample = lastHour.filter(e => hotSpots.some(([t]) => t === e.type)).slice(0, 3);
+      const analysisPrompt = `Analyze these generation errors. What's the likely root cause? Be concise (2-3 sentences max).\n${JSON.stringify(errorSample.map(e => ({ type: e.type, error: e.error, context: e.context })), null, 0)}`;
+      try {
+        const analysis = await callDeepSeek(analysisPrompt);
+        if (analysis) report += `\n**MaoMao analysis:** ${analysis}`;
+      } catch { /* LLM unavailable, skip analysis */ }
+    }
+
+    await msg.reply(report);
+  } catch (e) {
+    console.error("[maomai] generrors error:", e.message);
+    await msg.reply(`Error reading gen errors: ${e.message.slice(0, 100)}`);
+  }
+}
+
+// ── Auto-monitor: watch for generation error messages from bridge bot ────────
+// MaoMao watches for error events posted by the bridge's gen-monitor and
+// automatically analyzes patterns when error rate spikes.
+
+let _errorTracker = { count: 0, lastReset: Date.now(), lastAnalysis: 0 };
+const ERROR_SPIKE_THRESHOLD = 5;     // errors per window
+const ERROR_WINDOW_MS = 600000;      // 10 minute window
+const ANALYSIS_COOLDOWN_MS = 900000; // don't auto-analyze more than once per 15 min
+
+client.on("messageCreate", async (botMsg) => {
+  // Only watch messages from other bots (the bridge) that look like gen-monitor errors
+  if (!botMsg.author.bot) return;
+  if (!botMsg.content.includes("ERROR") || !botMsg.content.includes("**")) return;
+  // Check if it matches gen-monitor format: ❌ 🧠 **grok_image** ERROR
+  if (!/ERROR.*\([\d.]+s\)/.test(botMsg.content)) return;
+
+  // Track error frequency
+  const now = Date.now();
+  if (now - _errorTracker.lastReset > ERROR_WINDOW_MS) {
+    _errorTracker = { count: 0, lastReset: now, lastAnalysis: _errorTracker.lastAnalysis };
+  }
+  _errorTracker.count++;
+
+  // Auto-analyze on spike
+  if (_errorTracker.count >= ERROR_SPIKE_THRESHOLD && now - _errorTracker.lastAnalysis > ANALYSIS_COOLDOWN_MS) {
+    _errorTracker.lastAnalysis = now;
+    console.log(`[maomai-monitor] error spike detected (${_errorTracker.count} in window), auto-analyzing...`);
+
+    try {
+      const recentErrors = getRecentEvents({ limit: 10, status: "error", since: new Date(now - ERROR_WINDOW_MS) });
+      if (recentErrors.length < 3) return;
+
+      const errorData = recentErrors.map(e => ({ type: e.type, error: e.error, context: e.context }));
+      const analysisPrompt = `You're monitoring a creative AI pipeline. ${recentErrors.length} generation errors in the last 10 minutes. Diagnose the pattern — is it one service down, a shared dependency, or unrelated failures? Recommend one specific action.\n\nErrors:\n${JSON.stringify(errorData, null, 0)}`;
+
+      const analysis = await callDeepSeek(analysisPrompt);
+      if (analysis && analysis.trim()) {
+        await botMsg.channel.send({
+          content: `🐱 **MaoMao auto-diagnosis** (${recentErrors.length} errors in 10min):\n${analysis}`,
+          allowedMentions: { parse: [] },
+        });
+      }
+    } catch (e) {
+      console.warn("[maomai-monitor] auto-analysis failed:", e.message);
+    }
+  }
+});
 
 client.login(DISCORD_BOT_TOKEN);
