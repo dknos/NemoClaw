@@ -18,6 +18,7 @@
  */
 
 const https  = require("https");
+const http   = require("http");
 const fs     = require("fs");
 const path   = require("path");
 const os     = require("os");
@@ -662,6 +663,144 @@ function applyDiff(base, diffText) {
   return count > 0 && isValidHtml(patched) ? patched : null;
 }
 
+// ── ComfyUI helpers (ZTurbo images + LTX T2V for MindPipes posts) ────
+const ZTURBO_WORKFLOW = process.env.ZTURBO_WORKFLOW_PATH || "";
+const LTX_T2V_WORKFLOW = path.join(os.homedir(), "nemoclaw-persist", "ltx23-t2v-workflow.json");
+const MP_IMAGES_DIR   = path.join(os.homedir(), "netify-dev", "public", "images", "mindpipes");
+const MP_VIDEOS_DIR   = path.join(os.homedir(), "netify-dev", "public", "videos", "mindpipes");
+
+function getComfyHost() {
+  if (process.env.COMFYUI_HOST) return process.env.COMFYUI_HOST;
+  try {
+    const m = fs.readFileSync("/etc/resolv.conf", "utf8").match(/^nameserver\s+(\S+)/m);
+    return m ? m[1] : "172.20.224.1";
+  } catch (_e) { return "172.20.224.1"; }
+}
+
+function comfyReq(method, urlPath, body, contentType) {
+  return new Promise((resolve, reject) => {
+    const data = body ? (Buffer.isBuffer(body) ? body : Buffer.from(body)) : null;
+    const opts = { hostname: getComfyHost(), port: 8188, path: urlPath, method, headers: {} };
+    if (data) { opts.headers["Content-Type"] = contentType || "application/json"; opts.headers["Content-Length"] = data.length; }
+    const req = http.request(opts, (res) => { const c = []; res.on("data", d => c.push(d)); res.on("end", () => resolve({ status: res.statusCode, body: Buffer.concat(c) })); });
+    req.on("error", reject);
+    req.setTimeout(300000, () => { req.destroy(); reject(new Error("ComfyUI timeout")); });
+    if (data) req.write(data);
+    req.end();
+  });
+}
+
+async function comfySubmit(workflow) {
+  const res = await comfyReq("POST", "/prompt", JSON.stringify({ prompt: workflow, client_id: "mindpipes-builder" }));
+  const r = JSON.parse(res.body.toString());
+  if (!r.prompt_id) throw new Error(`ComfyUI submit failed: ${res.body.toString().slice(0, 200)}`);
+  return r.prompt_id;
+}
+
+async function comfyPollImage(promptId, timeoutMs = 120000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await sleep(3000);
+    const res = await comfyReq("GET", `/history/${promptId}`);
+    const hist = JSON.parse(res.body.toString());
+    const entry = hist[promptId];
+    if (!entry) continue;
+    if (entry.status?.status_str === "error") throw new Error("ComfyUI render error");
+    if (entry.status?.completed) {
+      for (const [, out] of Object.entries(entry.outputs || {})) {
+        if ((out.images || []).length > 0) return out.images[0];
+      }
+    }
+  }
+  throw new Error("ComfyUI image timed out");
+}
+
+async function comfyPollVideo(promptId, timeoutMs = 900000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await sleep(5000);
+    const res = await comfyReq("GET", `/history/${promptId}`);
+    const hist = JSON.parse(res.body.toString());
+    const entry = hist[promptId];
+    if (!entry) continue;
+    if (entry.status?.status_str === "error") throw new Error("ComfyUI video error");
+    if (entry.status?.completed) {
+      for (const [, out] of Object.entries(entry.outputs || {})) {
+        const vids = out.gifs || out.videos || [];
+        if (vids.length > 0) return vids[0];
+      }
+    }
+  }
+  throw new Error("ComfyUI video timed out");
+}
+
+async function comfyDownload(fileInfo) {
+  const qs = `filename=${encodeURIComponent(fileInfo.filename)}&subfolder=${encodeURIComponent(fileInfo.subfolder || "")}&type=${encodeURIComponent(fileInfo.type || "output")}`;
+  const res = await comfyReq("GET", `/view?${qs}`);
+  if (res.status !== 200) throw new Error(`ComfyUI download HTTP ${res.status}`);
+  return res.body;
+}
+
+// Generate image via ZTurbo → save to public/images/mindpipes/ → return web path
+async function generatePostImage(prompt) {
+  if (!ZTURBO_WORKFLOW || !fs.existsSync(ZTURBO_WORKFLOW)) {
+    console.warn(`${TAG} ZTurbo workflow not found (ZTURBO_WORKFLOW_PATH not set or missing)`);
+    return null;
+  }
+  try {
+    fs.mkdirSync(MP_IMAGES_DIR, { recursive: true });
+    const wf = JSON.parse(fs.readFileSync(ZTURBO_WORKFLOW, "utf8"));
+    const seed = Math.floor(Math.random() * 2147483647);
+    const today = new Date();
+    const ds = `${today.getFullYear()}_${String(today.getMonth()+1).padStart(2,"0")}_${String(today.getDate()).padStart(2,"0")}`;
+    wf["9"].inputs.filename_prefix = `ZImage/${ds}/MP`;
+    wf["6"].inputs.text = prompt;
+    wf["307"].inputs.value = seed;
+    console.log(`${TAG} ZTurbo: "${prompt.slice(0,60)}" seed:${seed}`);
+    const promptId = await comfySubmit(wf);
+    const fileInfo = await comfyPollImage(promptId, 120000);
+    const buf = await comfyDownload(fileInfo);
+    const fname = `${Date.now()}.png`;
+    const dest = path.join(MP_IMAGES_DIR, fname);
+    fs.writeFileSync(dest, buf);
+    console.log(`${TAG} Image saved: ${fname} (${(buf.length/1024).toFixed(0)}KB)`);
+    return `/images/mindpipes/${fname}`;
+  } catch (e) {
+    console.warn(`${TAG} generatePostImage failed: ${e.message}`);
+    return null;
+  }
+}
+
+// Generate video via LTX T2V → save to public/videos/mindpipes/ → return web path
+async function generatePostVideo(prompt, durationSec = 5) {
+  if (!fs.existsSync(LTX_T2V_WORKFLOW)) {
+    console.warn(`${TAG} LTX T2V workflow not found at ${LTX_T2V_WORKFLOW}`);
+    return null;
+  }
+  try {
+    fs.mkdirSync(MP_VIDEOS_DIR, { recursive: true });
+    const wf = JSON.parse(fs.readFileSync(LTX_T2V_WORKFLOW, "utf8"));
+    const seed = Math.floor(Math.random() * 2147483647);
+    const dur = Math.max(2, Math.min(15, durationSec));
+    wf["121"].inputs.text = prompt;
+    wf["115"].inputs.noise_seed = seed;
+    if (wf["196"]) { wf["196"].inputs.Xi = dur; wf["196"].inputs.Xf = dur; }
+    console.log(`${TAG} LTX T2V: "${prompt.slice(0,60)}" ${dur}s seed:${seed}`);
+    const promptId = await comfySubmit(wf);
+    const fileInfo = await comfyPollVideo(promptId, 600000); // 10 min
+    const buf = await comfyDownload(fileInfo);
+    const ext = fileInfo.filename.endsWith(".mp4") ? "mp4" : "webm";
+    const fname = `${Date.now()}.${ext}`;
+    const dest = path.join(MP_VIDEOS_DIR, fname);
+    fs.writeFileSync(dest, buf);
+    console.log(`${TAG} Video saved: ${fname} (${(buf.length/1024).toFixed(0)}KB)`);
+    return `/videos/mindpipes/${fname}`;
+  } catch (e) {
+    console.warn(`${TAG} generatePostVideo failed: ${e.message}`);
+    return null;
+  }
+}
+
 // ── Agent souls — WEIRDBOX ────────────────────────────────────────────
 const WB_CANDY_SOUL = `You are Candy — creative director for WEIRDBOX. You look at screenshots and HTML to give sharp, specific visual direction. You have strong taste and see exactly what needs to change. Brief responses. No fluff.`;
 
@@ -699,15 +838,27 @@ Return ONLY the JSON array.`;
 
 const MP_MAOMAI_SOUL = `You are MaoMao — content strategist at MindPipes. You plan what the crew should post this cycle. Research and brainstorm from your knowledge of tech, internet culture, history, science, art, gaming, trends, and viral moments.
 
+You can request visuals generated by the local AI image/video pipeline:
+- image_prompt: triggers ZTurbo (fast local diffusion) — good for art posts, feature headers, illustrations
+- video_prompt: triggers LTX T2V (local video gen, 5-10s) — good for ambient loops, visual essays, vibe pieces
+Only request visuals when they'd meaningfully enhance the post. Max 1 image OR 1 video per cycle total.
+
 Return ONLY a JSON object:
 {
   "posts": [
-    {"type": "article|art|vibes|trend|video|history", "topic": "specific topic", "angle": "what angle to take", "agent": "Candy|Pipes|MaoMao|Llama", "category": "TECH|ART|CULTURE|HISTORY|VIBES|SCIENCE"},
-    {"type": "...", "topic": "...", "angle": "...", "agent": "...", "category": "..."}
+    {
+      "type": "article|art|vibes|trend|video|history",
+      "topic": "specific topic",
+      "angle": "what angle to take",
+      "agent": "Candy|Pipes|MaoMao|Llama",
+      "category": "TECH|ART|CULTURE|HISTORY|VIBES|SCIENCE",
+      "image_prompt": "optional: ZTurbo prompt for a post image",
+      "video_prompt": "optional: LTX T2V prompt for a short ambient video (5-10s)"
+    }
   ],
   "layout_notes": "any layout improvements to make this cycle"
 }
-Plan 1-3 posts. Make them genuinely interesting.`;
+Plan 1-3 posts. Make them genuinely interesting. Vary topics and agents.`;
 
 const MP_CODEGEN_SOUL = `You are Pipes — web developer for MindPipes, the crew's NES-styled variety publication.
 
@@ -927,16 +1078,43 @@ Output a COMPLETE, visually stunning single-file HTML page. All CSS in <style>, 
 
     if (timeLeft() < budgetMs * 0.08) break;
 
+    // 3c.5 — MindPipes media generation (ZTurbo image / LTX video per MaoMao plan)
+    const generatedMedia = {};  // { imagePath, videoPath }
+    if (BUILD_TARGET === "mindpipes" && maomaiResult.text) {
+      let mpPlan = null;
+      try { mpPlan = JSON.parse(maomaiResult.text.match(/\{[\s\S]*\}/)?.[0]); } catch (_e) { /* ignore */ }
+      if (mpPlan?.posts) {
+        for (const post of mpPlan.posts) {
+          if (post.image_prompt && !generatedMedia.imagePath) {
+            logAgent("Candy", "vision", `Generating ZTurbo image: "${post.image_prompt.slice(0,60)}"`);
+            generatedMedia.imagePath = await generatePostImage(post.image_prompt);
+            if (generatedMedia.imagePath) logAgent("Candy", "done", `Image ready: ${generatedMedia.imagePath}`);
+          }
+          if (post.video_prompt && !generatedMedia.videoPath && !generatedMedia.imagePath) {
+            logAgent("Pipes", "coding", `Generating LTX video: "${post.video_prompt.slice(0,60)}"`);
+            generatedMedia.videoPath = await generatePostVideo(post.video_prompt, 5);
+            if (generatedMedia.videoPath) logAgent("Pipes", "done", `Video ready: ${generatedMedia.videoPath}`);
+          }
+        }
+      }
+    }
+
     // 3d. Build change summary — Pipes + Candy + MaoMao (if ready)
     let changes = "";
     if (issues.length) changes += `PIPES REVIEW — fix these:\n${issues.map(i => `- [${i.type||"issue"}] ${i.description}: ${i.fix}`).join("\n")}\n\n`;
     if (candyDir?.text) changes += `CANDY DIRECTION:\n${candyDir.text}\n\n`;
+    if (generatedMedia.imagePath) changes += `GENERATED IMAGE: ready at ${generatedMedia.imagePath} — embed in the most relevant new post using <img src="${generatedMedia.imagePath}" alt="..." style="width:100%;border-radius:2px;margin:10px 0">\n\n`;
+    if (generatedMedia.videoPath) changes += `GENERATED VIDEO: ready at ${generatedMedia.videoPath} — embed in the most relevant new post using <video src="${generatedMedia.videoPath}" autoplay muted loop playsinline style="width:100%;border-radius:2px;margin:10px 0"></video>\n\n`;
     if (maomaiResult.text) {
       let archPlan = null;
       try { archPlan = JSON.parse(maomaiResult.text.match(/\{[\s\S]*\}/)?.[0]); } catch (_e) { /* ignore */ }
       if (archPlan?.priority_changes?.length) {
         changes += `MAOMAI ARCH PLAN:\n${archPlan.priority_changes.map(c => `- ${c}`).join("\n")}`;
         if (archPlan.tech_notes) changes += `\nTech notes: ${archPlan.tech_notes}`;
+        changes += "\n\n";
+      } else if (archPlan?.posts?.length) {
+        changes += `MAOMAI CONTENT PLAN:\n${archPlan.posts.map(p => `- [${p.agent}/${p.category}] "${p.topic}": ${p.angle}`).join("\n")}`;
+        if (archPlan.layout_notes) changes += `\nLayout: ${archPlan.layout_notes}`;
         changes += "\n\n";
       } else if (maomaiResult.text) {
         changes += `MAOMAI NOTES:\n${maomaiResult.text.slice(0,300)}\n\n`;
