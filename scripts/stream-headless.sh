@@ -8,11 +8,18 @@
 #   ./stream-headless.sh [options]
 #
 # Options:
-#   --url URL         Page to stream (default: http://localhost:3001/weirdbox-lab.html)
-#   --duration SECS   Auto-stop after N seconds (default: 7200 = 2hr)
-#   --res WxH         Resolution (default: 1280x720)
-#   --fps N           Frame rate (default: 30)
-#   --bitrate KBPS    Video bitrate in kbps (default: 3000)
+#   --url URL           Page to stream (default: http://localhost:3001/weirdbox-lab.html)
+#   --duration SECS     Auto-stop after N seconds (default: 7200 = 2hr)
+#   --res WxH           Resolution (default: 1280x720)
+#   --fps N             Frame rate (default: 30)
+#   --bitrate KBPS      Video bitrate in kbps (default: 3000)
+#   --music FILE        Single audio file, loops forever
+#   --playlist FILE     Text file with one song path per line — plays through then loops
+#   --music-volume N    Volume 0.0–1.0 (default: 0.4)
+#
+# Playlist file format (~/.nemoclaw/source/scripts/stream-playlist.txt):
+#   /mnt/c/Users/rneeb/Downloads/EPIPHANY_KLICKAUD (1).mp3
+#   /mnt/c/Users/rneeb/Music/another-track.mp3
 #
 # Requires:
 #   - xvfb (sudo apt-get install -y xvfb)
@@ -40,8 +47,9 @@ DURATION=7200
 RES="1280x720"
 FPS=30
 BITRATE=3000
-MUSIC_FILE=""    # path to an audio file (mp3/flac/ogg/wav) — silence if not set
-MUSIC_VOLUME=0.4 # 0.0 to 1.0 — mix level for music vs silence
+MUSIC_FILE=""     # single audio file, loops forever
+MUSIC_PLAYLIST="" # text file with one song path per line
+MUSIC_VOLUME=0.4  # 0.0 to 1.0
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -68,6 +76,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --music)
       MUSIC_FILE="$2"
+      shift 2
+      ;;
+    --playlist)
+      MUSIC_PLAYLIST="$2"
       shift 2
       ;;
     --music-volume)
@@ -136,6 +148,7 @@ cleanup() {
   [[ -n "$CHROME_PID" ]] && kill "$CHROME_PID" 2>/dev/null || true
   [[ -n "$XVFB_PID" ]] && kill "$XVFB_PID" 2>/dev/null || true
   rm -rf "$TMPPROFILE"
+  [[ -n "${FFMPEG_CONCAT_FILE:-}" ]] && rm -f "$FFMPEG_CONCAT_FILE"
   # Write idle to both live JSONs so SwarmStatus knows stream ended
   for f in "$LIVE_JSON_WB" "$LIVE_JSON_MP"; do
     [[ -f "$f" ]] && python3 -c "
@@ -214,24 +227,56 @@ mark_live
 # ── Start FFmpeg ──────────────────────────────────────────────────────────────
 echo "[stream] starting FFmpeg → YouTube RTMP"
 echo "[stream] resolution: ${WIDTH}x${HEIGHT} @ ${FPS}fps | bitrate: ${BITRATE}k | duration: ${DURATION}s"
-if [[ -n "$MUSIC_FILE" ]]; then
-  if [[ ! -f "$MUSIC_FILE" ]]; then
-    echo "[stream] WARNING: music file not found: $MUSIC_FILE — streaming silence"
-    MUSIC_FILE=""
+
+# Build audio: playlist > single file > silence
+FFMPEG_CONCAT_FILE=""
+AUDIO_INPUT_ARGS=()
+AUDIO_FILTER=""
+
+if [[ -n "$MUSIC_PLAYLIST" ]]; then
+  if [[ ! -f "$MUSIC_PLAYLIST" ]]; then
+    echo "[stream] WARNING: playlist not found: $MUSIC_PLAYLIST — silence"
   else
-    echo "[stream] music: $MUSIC_FILE (volume: ${MUSIC_VOLUME})"
+    # Build an FFmpeg concat file from the playlist, looping the whole list
+    FFMPEG_CONCAT_FILE=$(mktemp /tmp/stream-playlist-XXXXXX.txt)
+    # Write each valid file entry twice (first pass + loop pass) then use -stream_loop
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ -z "$line" || "$line" == \#* ]] && continue
+      if [[ -f "$line" ]]; then
+        printf "file '%s'\n" "$line" >>"$FFMPEG_CONCAT_FILE"
+      else
+        echo "[stream] WARNING: skipping missing file: $line"
+      fi
+    done <"$MUSIC_PLAYLIST"
+    track_count=$(grep -c "^file" "$FFMPEG_CONCAT_FILE" 2>/dev/null || echo 0)
+    if [[ "$track_count" -eq 0 ]]; then
+      echo "[stream] WARNING: playlist has no valid files — silence"
+      rm -f "$FFMPEG_CONCAT_FILE"
+      FFMPEG_CONCAT_FILE=""
+    else
+      echo "[stream] playlist: $track_count tracks (volume: ${MUSIC_VOLUME})"
+      AUDIO_INPUT_ARGS=(-stream_loop -1 -f concat -safe 0 -i "$FFMPEG_CONCAT_FILE")
+      AUDIO_FILTER="-filter:a volume=${MUSIC_VOLUME}"
+    fi
   fi
 fi
-echo "[stream] ─────────────────────────────────────────────"
 
-# Build audio input args: looping music file OR lavfi silence
-if [[ -n "$MUSIC_FILE" ]]; then
-  AUDIO_INPUT_ARGS=(-stream_loop -1 -i "$MUSIC_FILE")
-  AUDIO_FILTER="-filter:a volume=${MUSIC_VOLUME}"
-else
-  AUDIO_INPUT_ARGS=(-f lavfi -i "anullsrc=r=44100:cl=stereo")
-  AUDIO_FILTER=""
+if [[ -z "${AUDIO_INPUT_ARGS[*]}" && -n "$MUSIC_FILE" ]]; then
+  if [[ ! -f "$MUSIC_FILE" ]]; then
+    echo "[stream] WARNING: music file not found: $MUSIC_FILE — silence"
+  else
+    echo "[stream] music: $(basename "$MUSIC_FILE") (volume: ${MUSIC_VOLUME}, looping)"
+    AUDIO_INPUT_ARGS=(-stream_loop -1 -i "$MUSIC_FILE")
+    AUDIO_FILTER="-filter:a volume=${MUSIC_VOLUME}"
+  fi
 fi
+
+if [[ -z "${AUDIO_INPUT_ARGS[*]}" ]]; then
+  echo "[stream] audio: silence"
+  AUDIO_INPUT_ARGS=(-f lavfi -i "anullsrc=r=44100:cl=stereo")
+fi
+
+echo "[stream] ─────────────────────────────────────────────"
 
 "$FFMPEG_BIN" \
   -loglevel warning \

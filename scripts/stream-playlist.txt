@@ -1,0 +1,5 @@
+# Stream music playlist — one file path per line, plays through then loops
+# Windows paths work as /mnt/c/... in WSL2
+# Add more tracks below, order is respected
+
+/mnt/c/Users/rneeb/Downloads/EPIPHANY_KLICKAUD (1).mp3
