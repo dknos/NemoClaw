@@ -295,7 +295,7 @@ async function pollOnce(env, liveChatId, pageToken, userCooldowns, voteWindow) {
     if (pageToken) qs += `&pageToken=${encodeURIComponent(pageToken)}`;
 
     const { status, body } = await httpsGet(
-      `https://www.googleapis.com/youtube/v3/liveChatMessages?${qs}`,
+      `https://www.googleapis.com/youtube/v3/liveChat/messages?${qs}`,
       { "Authorization": `Bearer ${token}` }
     );
 
