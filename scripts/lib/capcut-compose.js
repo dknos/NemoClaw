@@ -171,6 +171,8 @@ async function buildTimelines(totalUs, mediaCount, beats, style, vidDurationsUs 
 // Pre-trim source clips to slot duration so CapCut makes clean cuts.
 // CapCut plays each clip in full regardless of the timeline slot endpoint,
 // so we must trim before passing to the API.
+// Returns one URL per timeline slot — each clip appearance uses a different start offset
+// so repeated clips show different windows rather than the same 6s every time.
 async function trimClipsToSegDur(vidUrls, vidTimelines, tmpDir) {
   const { findFfmpeg } = require("./ffmpeg-utils");
   const { execSync } = require("child_process");
@@ -179,46 +181,55 @@ async function trimClipsToSegDur(vidUrls, vidTimelines, tmpDir) {
 
   const segDurSec = (vidTimelines[0].end - vidTimelines[0].start) / 1_000_000;
   const baseUrl = vidUrls[0].substring(0, vidUrls[0].lastIndexOf("/"));
-
+  const srcDurCache = {};
+  const appearanceCount = {};
   const result = [];
-  for (const url of vidUrls) {
+
+  for (let i = 0; i < vidTimelines.length; i++) {
+    const url = vidUrls[i % vidUrls.length];
     const filename = url.split("/").pop();
     const srcPath = path.join(tmpDir, filename);
-    const srcDurSec = (getVideoDurationsUs([srcPath])[0] || 0) / 1_000_000;
+
+    if (!(filename in srcDurCache)) {
+      srcDurCache[filename] = (getVideoDurationsUs([srcPath])[0] || 0) / 1_000_000;
+    }
+    const srcDurSec = srcDurCache[filename];
 
     if (srcDurSec <= segDurSec) {
       result.push(url);
       continue;
     }
 
-    const trimName = filename.replace(/\.mp4$/i, "_seg.mp4");
+    const n = appearanceCount[filename] || 0;
+    appearanceCount[filename] = n + 1;
+    const maxStart = srcDurSec - segDurSec;
+    const startSec = Math.min(n * segDurSec, maxStart);
+
+    const trimName = filename.replace(/\.mp4$/i, `_seg${i}.mp4`);
     const trimPath = path.join(tmpDir, trimName);
     try {
       execSync(
-        `"${ffmpeg}" -y -ss 0 -t ${segDurSec.toFixed(3)} -i "${srcPath}" -c copy -avoid_negative_ts 1 "${trimPath}"`,
+        `"${ffmpeg}" -y -ss ${startSec.toFixed(3)} -t ${segDurSec.toFixed(3)} -i "${srcPath}" -c copy -avoid_negative_ts 1 "${trimPath}"`,
         { timeout: 30000, stdio: "pipe" }
       );
       result.push(`${baseUrl}/${trimName}`);
-      console.log(`[capcut-compose] trimmed ${filename}: ${srcDurSec.toFixed(1)}s → ${segDurSec.toFixed(1)}s`);
+      console.log(`[capcut-compose] trimmed ${filename} slot${i}: ${startSec.toFixed(1)}s+${segDurSec.toFixed(1)}s`);
     } catch (e) {
-      console.warn(`[capcut-compose] trim failed for ${filename}:`, e.message);
+      console.warn(`[capcut-compose] trim failed for ${filename} slot ${i}:`, e.message);
       result.push(url);
     }
   }
-  return result;
+  return result; // already expanded — one URL per slot
 }
 
 async function addVideoTracks(draft, vidUrls, timelines, mediaCount, styleCfg, w, h, hasAudio = false, tmpDir = null) {
   const vidTimelines = timelines.filter((_, i) => i % mediaCount < vidUrls.length);
   if (vidTimelines.length === 0) return draft;
 
-  // Pre-trim clips to slot duration — CapCut ignores timeline endpoint otherwise
-  const activeUrls = tmpDir
+  // Pre-trim clips per slot with offset spreading — returns one URL per slot already
+  const expandedUrls = tmpDir
     ? await trimClipsToSegDur(vidUrls, vidTimelines, tmpDir)
-    : vidUrls;
-
-  // API maps url[i] → timelines[i] 1:1 — cycle trimmed URLs to fill all slots
-  const expandedUrls = vidTimelines.map((_, i) => activeUrls[i % activeUrls.length]);
+    : vidTimelines.map((_, i) => vidUrls[i % vidUrls.length]);
 
   const infos = await cc.videoInfos({
     videoUrls: expandedUrls, timelines: vidTimelines,
@@ -228,7 +239,7 @@ async function addVideoTracks(draft, vidUrls, timelines, mediaCount, styleCfg, w
     volume: hasAudio ? 0 : 1.0,
   });
   const result = await cc.addVideos(draft, infos);
-  console.log(`[capcut-compose] added ${vidUrls.length} videos on ${vidTimelines.length} segments (${expandedUrls.length} slots, clips trimmed to ${((vidTimelines[0]?.end - vidTimelines[0]?.start) / 1e6 || 0).toFixed(1)}s)`);
+  console.log(`[capcut-compose] added ${vidUrls.length} videos on ${vidTimelines.length} segments (${expandedUrls.length} slots @ ${((vidTimelines[0]?.end - vidTimelines[0]?.start) / 1e6 || 0).toFixed(1)}s each)`);
   return result.draftUrl;
 }
 
@@ -322,11 +333,11 @@ async function addBeatEffects(draft, beats, totalUs) {
 
 async function addStyleEffects(draft, styleCfg, totalUs) {
   if (styleCfg.effectNames.length === 0) return draft;
-  // Batch all style effects into one call — API takes an array of names
+  // API maps effects[i] → timelines[i] 1:1 — one timeline entry per effect name
   try {
     const effectStr = await cc.capcutPost("/effect_infos", {
       effects: styleCfg.effectNames,
-      timelines: [{ start: 0, end: totalUs }],
+      timelines: styleCfg.effectNames.map(() => ({ start: 0, end: totalUs })),
     });
     if (effectStr.infos) {
       const result = await cc.addEffects(draft, effectStr.infos);
