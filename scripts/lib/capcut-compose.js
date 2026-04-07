@@ -333,21 +333,26 @@ async function addBeatEffects(draft, beats, totalUs) {
 
 async function addStyleEffects(draft, styleCfg, totalUs) {
   if (styleCfg.effectNames.length === 0) return draft;
-  // API maps effects[i] → timelines[i] 1:1 — one timeline entry per effect name
-  try {
-    const effectStr = await cc.capcutPost("/effect_infos", {
-      effects: styleCfg.effectNames,
-      timelines: styleCfg.effectNames.map(() => ({ start: 0, end: totalUs })),
-    });
-    if (effectStr.infos) {
-      const result = await cc.addEffects(draft, effectStr.infos);
-      console.log(`[capcut-compose] applied effects: ${styleCfg.effectNames.join(", ")}`);
-      return result.draftUrl;
+  // API takes 1 effect + 1 timeline per call (same pattern as beat effects)
+  let current = draft;
+  let added = 0;
+  for (const effectName of styleCfg.effectNames) {
+    try {
+      const effectStr = await cc.capcutPost("/effect_infos", {
+        effects: [effectName],
+        timelines: [{ start: 0, end: totalUs }],
+      });
+      if (effectStr.infos) {
+        const result = await cc.addEffects(current, effectStr.infos);
+        current = result.draftUrl;
+        added++;
+      }
+    } catch (e) {
+      console.warn(`[capcut-compose] effect ${effectName} failed:`, e.message);
     }
-  } catch (e) {
-    console.warn(`[capcut-compose] effects failed:`, e.message);
   }
-  return draft;
+  if (added > 0) console.log(`[capcut-compose] applied ${added}/${styleCfg.effectNames.length} effects: ${styleCfg.effectNames.join(", ")}`);
+  return current;
 }
 
 // ── Caption / lyrics ────────────────────────────────────────────────────────
