@@ -6,10 +6,10 @@
  * Weirdbox Lab Builder — Autonomous agent loop for weirdbox-lab.html
  *
  * Runs on a 20-minute cron. Agents plan + build improvements every cycle:
- *   Candy   (llama-4-maverick, vision) — screenshots the page, sets creative direction
- *   Pipes   (gemini-3.1-flash)         — team lead, reviewer, codegen fallback
- *   MaoMao  (qwen/qwen3-6b)            — primary codegen; falls back to Pipes on timeout
- *   Llama   (llama-4-maverick OpenRouter) — extra improvement pass when time allows
+ *   Candy   (gemini-3.1-flash-lite-preview, vision) — screenshots the page, sets creative direction
+ *   Pipes   (gemini-3.1-flash-lite-preview) — team lead, reviewer, codegen
+ *   MaoMao  (qwen/qwen3.6-plus:free via OpenRouter) — async architect, reasoning tokens
+ *   Llama   (meta-llama/llama-4-maverick via OpenRouter) — polish pass
  *
  * RULES:
  *   - ONLY writes to public/weirdbox-lab.html
@@ -98,7 +98,6 @@ async function getVertexToken() {
 const CANDY_MODEL  = "gemini-3.1-flash-lite-preview";                 // Vertex Gemini — vision + direction
 const PIPES_MODEL  = "gemini-3.1-flash-lite-preview";                 // Vertex Gemini — reviewer + codegen fallback
 const MAOMAI_MODEL = "qwen/qwen3.6-plus:free";                        // OpenRouter — architect (async, don't block)
-const FLASH_MODEL  = "gemini-3.1-flash-lite-preview";                 // Vertex Gemini — fast codegen (5th agent)
 const LLAMA_MODEL  = "meta-llama/llama-4-maverick";                   // OpenRouter — polish pass (no MaaS token cap)
 
 const MAOMAI_TIMEOUT_MS = 50000; // max wait for Qwen — if it's not done, proceed without it
@@ -134,7 +133,6 @@ const liveState = {
     Candy:  { status: "idle", lastMessage: "", tokens: 0 },
     Pipes:  { status: "idle", lastMessage: "", tokens: 0 },
     MaoMao: { status: "idle", lastMessage: "", tokens: 0 },
-    Flash:  { status: "idle", lastMessage: "", tokens: 0 },
     Llama:  { status: "idle", lastMessage: "", tokens: 0 },
   },
   logs: [],
@@ -281,8 +279,8 @@ const MONITOR_PANEL = `${MONITOR_MARKER_START}
 </div>
 <script>
 (function(){
-  var ICONS={Candy:'🎨',Pipes:'🔧',MaoMao:'🐱',Flash:'⚡',Llama:'🦙',System:'⚙️'};
-  var AC={Candy:'#ff6b9d',Pipes:'#00f5d4',MaoMao:'#ffd166',Flash:'#06d6a0',Llama:'#a78bfa',System:'rgba(255,255,255,.35)'};
+  var ICONS={Candy:'🎨',Pipes:'🔧',MaoMao:'🐱',Llama:'🦙',System:'⚙️'};
+  var AC={Candy:'#ff6b9d',Pipes:'#00f5d4',MaoMao:'#ffd166',Llama:'#a78bfa',System:'rgba(255,255,255,.35)'};
   var ACTIVE_STATES=new Set(['vision','reviewing','planning','coding','thinking','polishing','starting','building','working']);
   var lastLog=0,curTab='logs';
 
@@ -615,18 +613,11 @@ async function callLLM(opts) {
   return { text: "", tokens: 0, durationMs: 0, statusCode: 0 };
 }
 
-// Flash (Gemini 2.0) codegen with Pipes fallback
+// Pipes codegen
 async function codegenWithFallback(opts) {
-  console.log("[weirdbox-lab] Codegen: Flash (gemini-2.0-flash)...");
-  const result = await callLLM({ ...opts, model: FLASH_MODEL });
-  if (result.text) {
-    trackTokens(FLASH_MODEL, "Flash", result.tokens);
-    return result;
-  }
-  console.warn("[weirdbox-lab] Flash failed — falling back to Pipes");
-  const fallback = await callLLM({ ...opts, model: PIPES_MODEL, imageBase64: null });
-  trackTokens(PIPES_MODEL, "Pipes[codegen]", fallback.tokens);
-  return fallback;
+  const result = await callLLM({ ...opts, model: PIPES_MODEL });
+  trackTokens(PIPES_MODEL, "Pipes", result.tokens);
+  return result;
 }
 
 // ── HTML helpers ─────────────────────────────────────────────────────
@@ -678,7 +669,7 @@ const MAOMAI_SOUL = `You are MaoMao — architect for WEIRDBOX. You analyze the 
 Return ONLY a JSON object:
 {"priority_changes": ["specific change 1", "specific change 2", "specific change 3"], "tech_notes": "CSS/JS implementation hints, exact properties/values"}`;
 
-const CODEGEN_SOUL = `You are Flash — fast coder for WEIRDBOX. You receive a plan and apply it to the HTML page precisely.
+const CODEGEN_SOUL = `You are Pipes — coder for WEIRDBOX. You receive a plan and apply it to the HTML page precisely.
 
 For pages <20KB: Output the COMPLETE HTML from <!DOCTYPE html> to </html>.
 For pages >20KB: Output ONLY changed sections as SEARCH/REPLACE blocks:
@@ -890,10 +881,8 @@ Output a COMPLETE, visually stunning single-file HTML page. All CSS in <style>, 
         + codegenHtml.slice(-half);
     }
 
-    // 3e. Flash codegen (Gemini 2.0 → Pipes fallback)
-    liveState.agents.Flash.status = "coding";
-    writeLiveState();
-    logAgent("Flash", "coding", `Applying changes (${scope}) — ${(currentHtml.length/1024).toFixed(1)}KB page`);
+    // 3e. Pipes codegen
+    logAgent("Pipes", "coding", `Applying changes (${scope}) — ${(currentHtml.length/1024).toFixed(1)}KB page`);
     const applyResult = await codegenWithFallback({
       systemPrompt: CODEGEN_SOUL,
       userPrompt: `Apply these changes to the WEIRDBOX Lab page.
@@ -919,7 +908,7 @@ ${currentHtml.length > 20000
       if (patched) {
         currentHtml = patched;
         writeLabFile(currentHtml);
-        logAgent("Flash", "done", `DIFF applied. New size: ${(currentHtml.length/1024).toFixed(1)}KB`);
+        logAgent("Pipes", "done", `DIFF applied. New size: ${(currentHtml.length/1024).toFixed(1)}KB`);
         updated = true;
         consecutiveFailures = 0;
       }
@@ -930,10 +919,10 @@ ${currentHtml.length > 20000
       if (isValidHtml(newHtml) && newHtml.length > currentHtml.length * 0.5) {
         currentHtml = newHtml;
         writeLabFile(currentHtml);
-        logAgent("Flash", "done", `Full rewrite. New size: ${(currentHtml.length/1024).toFixed(1)}KB`);
+        logAgent("Pipes", "done", `Full rewrite. New size: ${(currentHtml.length/1024).toFixed(1)}KB`);
         consecutiveFailures = 0;
       } else {
-        logAgent("Flash", "error", `Output rejected — keeping current ${(currentHtml.length/1024).toFixed(1)}KB`);
+        logAgent("Pipes", "error", `Output rejected — keeping current ${(currentHtml.length/1024).toFixed(1)}KB`);
         consecutiveFailures++;
       }
     }
@@ -1008,7 +997,7 @@ ${currentHtml.length > 20000
   notifyDiscord([
     `**[weirdbox-lab]** ✅ **Cycle complete**`,
     `⏱ ${duration} min | 🔁 ${iterNum} iterations | 📄 ${(currentHtml.length/1024).toFixed(1)}KB | 💰 $${totalCost.toFixed(4)} | 🔢 ${totalTokens.toLocaleString()} tokens`,
-    `👁 Candy (gemini-3.1-flash) | 🔍 Pipes | 🐱 MaoMao (qwen-30b) | ⚡ Flash (gemini-2.0) | 🦙 Llama`,
+    `👁 Candy | 🔍 Pipes | 🐱 MaoMao (qwen3.6) | 🦙 Llama — all on gemini-3.1-flash-lite-preview / OpenRouter`,
   ].join("\n"));
 }
 
