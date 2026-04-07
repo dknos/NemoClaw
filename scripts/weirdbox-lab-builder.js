@@ -366,7 +366,7 @@ async function build() {
   let consecutiveFailures = 0;
   let iterNum = 0;
 
-  notifyDiscord(`**[weirdbox-lab-builder]** Starting ${(budgetMs/60000).toFixed(0)}-min build cycle (triggered by: ${triggeredBy})`);
+  notifyDiscord(`**[weirdbox-lab]** 🚀 **Starting** — ${(budgetMs/60000).toFixed(0)}-min cycle | page: ${(currentHtml.length/1024).toFixed(1)}KB | triggered by: ${triggeredBy}`);
 
   // Phase 1: Candy vision — screenshot + direction
   console.log("[weirdbox-lab] Phase 1: Candy vision (screenshot)");
@@ -390,8 +390,10 @@ async function build() {
   trackTokens(CANDY_MODEL, "Candy", vision.tokens);
   if (vision.text) {
     console.log(`[weirdbox-lab] Candy direction: ${vision.text.slice(0,120)}...`);
+    notifyDiscord(`**[weirdbox-lab]** 🍬 **Candy's plan** (${screenshot ? "saw screenshot" : "HTML only"}):\n> ${vision.text.slice(0,400).replace(/\n/g, "\n> ")}`);
   } else {
     console.warn("[weirdbox-lab] Candy returned nothing — continuing without direction");
+    notifyDiscord("**[weirdbox-lab]** ⚠️ Candy returned nothing — proceeding without vision");
   }
 
   // Phase 2: if no current HTML, generate from scratch
@@ -472,6 +474,7 @@ Output a COMPLETE, visually stunning single-file HTML page. All CSS in <style>, 
       console.log("[weirdbox-lab] MaoMao still thinking — proceeding without architect plan");
     } else {
       console.log(`[weirdbox-lab] MaoMao arch plan ready: ${maomaiResult.text.slice(0,80)}...`);
+      notifyDiscord(`**[weirdbox-lab]** 🐱 **MaoMao plan** (iter ${iterNum}):\n> ${maomaiResult.text.slice(0,300).replace(/\n/g, "\n> ")}`);
     }
 
     let issues = [];
@@ -577,12 +580,20 @@ ${currentHtml.length > 20000
     }
 
     // Guardrails
-    if (consecutiveFailures >= 3) { console.warn("[weirdbox-lab] 3 failures in a row — stopping early"); break; }
-    if (totalTokens > 400000)     { console.warn("[weirdbox-lab] Token budget hit — stopping"); break; }
+    if (consecutiveFailures >= 3) {
+      console.warn("[weirdbox-lab] 3 failures in a row — stopping early");
+      notifyDiscord(`**[weirdbox-lab]** ⚠️ 3 consecutive failures — stopping early at iter ${iterNum}`);
+      break;
+    }
+    if (totalTokens > 400000) {
+      console.warn("[weirdbox-lab] Token budget hit — stopping");
+      notifyDiscord(`**[weirdbox-lab]** ⚠️ Token budget hit (${totalTokens.toLocaleString()} tokens) — stopping`);
+      break;
+    }
 
-    // Midpoint Discord update
-    if (iterNum === 3) {
-      notifyDiscord(`**[weirdbox-lab-builder]** Midpoint — iter ${iterNum}, ${timeLeftStr()} left, ${(currentHtml.length/1024).toFixed(1)}KB, $${totalCost.toFixed(4)} spent`);
+    // Per-iteration status every 2 iterations
+    if (iterNum % 2 === 0) {
+      notifyDiscord(`**[weirdbox-lab]** ⚡ **Iter ${iterNum}** | scope: ${scope} | ${timeLeftStr()} left | ${(currentHtml.length/1024).toFixed(1)}KB | $${totalCost.toFixed(4)}`);
     }
   }
 
@@ -602,11 +613,15 @@ ${currentHtml.length > 20000
     fs.writeFileSync(STATE_FILE, JSON.stringify({ lastRun: new Date().toISOString(), iterations: iterNum, htmlSize: currentHtml.length, totalTokens, totalCost, duration }, null, 2));
   } catch (e) { console.warn(`[weirdbox-lab] State save failed: ${e.message}`); }
 
-  notifyDiscord(`**[weirdbox-lab-builder]** ✅ Done — ${duration}min, ${iterNum} iterations, ${(currentHtml.length/1024).toFixed(1)}KB, $${totalCost.toFixed(4)}`);
+  notifyDiscord([
+    `**[weirdbox-lab]** ✅ **Cycle complete**`,
+    `⏱ ${duration} min | 🔁 ${iterNum} iterations | 📄 ${(currentHtml.length/1024).toFixed(1)}KB | 💰 $${totalCost.toFixed(4)} | 🔢 ${totalTokens.toLocaleString()} tokens`,
+    `👁 Candy (gemini-3.1-flash) | 🔍 Pipes | 🐱 MaoMao (qwen-30b) | ⚡ Flash (gemini-2.0) | 🦙 Llama`,
+  ].join("\n"));
 }
 
 build().catch(e => {
   console.error(`[weirdbox-lab] Fatal: ${e.message}`);
-  notifyDiscord(`**[weirdbox-lab-builder]** ❌ Fatal error: ${e.message.slice(0,200)}`);
+  notifyDiscord(`**[weirdbox-lab]** ❌ **Fatal error:** ${e.message.slice(0,200)}`);
   process.exit(1);
 });
