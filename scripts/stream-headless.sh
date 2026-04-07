@@ -295,7 +295,9 @@ echo "[stream] ─────────────────────�
   \
   -c:v libx264 \
   -preset veryfast \
+  -x264-params "nal-hrd=cbr" \
   -b:v "${BITRATE}k" \
+  -minrate "${BITRATE}k" \
   -maxrate "${BITRATE}k" \
   -bufsize "${BUFSIZE}k" \
   -g "$GOP" \
