@@ -61,10 +61,13 @@ async function getVertexToken() {
 // Pipes  = team lead + visual critic + codegen fallback
 // MaoMao = primary codegen (Qwen 3.6 via OpenRouter)
 // Llama  = extra improvement pass
-const CANDY_MODEL  = "gemini-3.1-flash";                              // Vertex Gemini — fast + vision
-const PIPES_MODEL  = "gemini-3.1-flash";                              // Vertex Gemini — full flash
-const MAOMAI_MODEL = "gemini-2.0-flash";                              // Vertex Gemini — fast codegen
-const LLAMA_MODEL  = "meta/llama-4-maverick-17b-128e-instruct-maas"; // Vertex MaaS — Llama pass
+const CANDY_MODEL  = "gemini-3.1-flash";                              // Vertex Gemini — vision + direction
+const PIPES_MODEL  = "gemini-3.1-flash";                              // Vertex Gemini — reviewer + codegen fallback
+const MAOMAI_MODEL = "qwen/qwen3-30b-a3b";                            // OpenRouter — architect (async, don't block)
+const FLASH_MODEL  = "gemini-2.0-flash";                              // Vertex Gemini — fast codegen (5th agent)
+const LLAMA_MODEL  = "meta/llama-4-maverick-17b-128e-instruct-maas"; // Vertex MaaS — polish pass
+
+const MAOMAI_TIMEOUT_MS = 50000; // max wait for Qwen — if it's not done, proceed without it
 
 const VERTEX_PROJECT = "drivenemo";
 const VERTEX_REGION  = "us-east5";
@@ -256,16 +259,16 @@ async function callLLM(opts) {
   return { text: "", tokens: 0, durationMs: 0, statusCode: 0 };
 }
 
-// Qwen codegen with Pipes fallback on timeout/failure
+// Flash (Gemini 2.0) codegen with Pipes fallback
 async function codegenWithFallback(opts) {
-  console.log(`[weirdbox-lab] Codegen: trying Qwen...`);
-  const result = await callLLM({ ...opts, model: MAOMAI_MODEL });
+  console.log("[weirdbox-lab] Codegen: Flash (gemini-2.0-flash)...");
+  const result = await callLLM({ ...opts, model: FLASH_MODEL });
   if (result.text) {
-    trackTokens(MAOMAI_MODEL, "MaoMao", result.tokens);
+    trackTokens(FLASH_MODEL, "Flash", result.tokens);
     return result;
   }
-  console.warn(`[weirdbox-lab] Qwen failed/timed out — falling back to Pipes (Gemini)`);
-  const fallback = await callLLM({ ...opts, model: PIPES_MODEL, imageBase64: null }); // no image for codegen
+  console.warn("[weirdbox-lab] Flash failed — falling back to Pipes");
+  const fallback = await callLLM({ ...opts, model: PIPES_MODEL, imageBase64: null });
   trackTokens(PIPES_MODEL, "Pipes[codegen]", fallback.tokens);
   return fallback;
 }
@@ -314,7 +317,12 @@ Return EXACTLY a JSON array (max 5 issues):
 [{"priority":1-5,"type":"bug"|"design"|"ux"|"animation","description":"what's wrong","fix":"exact specific fix"}]
 Return ONLY the JSON array.`;
 
-const CODEGEN_SOUL = `You are MaoMao — fast coder for WEIRDBOX. You apply exactly the changes you're given.
+const MAOMAI_SOUL = `You are MaoMao — architect for WEIRDBOX. You analyze the current page and plan specific technical improvements. You don't write code, you write precise implementation specs for the coder.
+
+Return ONLY a JSON object:
+{"priority_changes": ["specific change 1", "specific change 2", "specific change 3"], "tech_notes": "CSS/JS implementation hints, exact properties/values"}`;
+
+const CODEGEN_SOUL = `You are Flash — fast coder for WEIRDBOX. You receive a plan and apply it to the HTML page precisely.
 
 For pages <20KB: Output the COMPLETE HTML from <!DOCTYPE html> to </html>.
 For pages >20KB: Output ONLY changed sections as SEARCH/REPLACE blocks:
@@ -420,23 +428,32 @@ Output a COMPLETE, visually stunning single-file HTML page. All CSS in <style>, 
     const scope = getScope();
     console.log(`[weirdbox-lab] --- Iteration ${iterNum} (${scope}, ${timeLeftStr()} left) ---`);
 
-    // 3a. Pipes review
+    // 3a. Fire MaoMao architect ASYNC — don't block, let him think while Pipes reviews
+    const summary = summarizeHtml(currentHtml);
+    const maomaiPromise = Promise.race([
+      callLLM({
+        model: MAOMAI_MODEL, systemPrompt: MAOMAI_SOUL,
+        userPrompt: `WEIRDBOX Lab page. Scope: ${scope}. Time left: ${timeLeftStr()}.\nPage summary: ${summary}\n\nPlan the next improvements.`,
+        maxTokens: 600, temperature: 0.4, _agent: "MaoMao",
+      }),
+      sleep(MAOMAI_TIMEOUT_MS).then(() => ({ text: "", tokens: 0, timedOut: true })),
+    ]);
+
+    // 3b. Pipes review + Candy direction in parallel (while MaoMao thinks)
     const reviewHtml = currentHtml.length > 6000
       ? currentHtml.slice(0, 3000) + "\n\n<!-- ...middle truncated... -->\n\n" + currentHtml.slice(-3000)
       : currentHtml;
 
     const [review, candyDir] = await Promise.all([
-      // Pipes always reviews
       callLLM({
         model: PIPES_MODEL, systemPrompt: PIPES_SOUL,
-        userPrompt: `Review this WEIRDBOX Lab page. Scope: ${scope}. Time left: ${timeLeftStr()}.\nSummary: ${summarizeHtml(currentHtml)}\n\nHTML:\n${reviewHtml}`,
+        userPrompt: `Review this WEIRDBOX Lab page. Scope: ${scope}. Time left: ${timeLeftStr()}.\nSummary: ${summary}\n\nHTML:\n${reviewHtml}`,
         maxTokens: 600, temperature: 0.15, _agent: "Pipes",
       }),
-      // Candy direction every other iteration (with screenshot if available)
       iterNum % 2 === 0
         ? callLLM({
             model: CANDY_MODEL, systemPrompt: CANDY_SOUL,
-            userPrompt: `WEIRDBOX Lab — scope: ${scope}, ${timeLeftStr()} left.\nSummary: ${summarizeHtml(currentHtml)}\n\n${vision.text ? `Original direction: ${vision.text.slice(0,200)}\n\n` : ""}Suggest ONE specific ${scope === "polish" ? "polish" : "enhancement"}.`,
+            userPrompt: `WEIRDBOX Lab — scope: ${scope}, ${timeLeftStr()} left.\nSummary: ${summary}\n\n${vision.text ? `Original direction: ${vision.text.slice(0,200)}\n\n` : ""}Suggest ONE specific ${scope === "polish" ? "polish" : "enhancement"}.`,
             maxTokens: 300, temperature: 0.8, _agent: "Candy",
           })
         : Promise.resolve(null),
@@ -445,18 +462,41 @@ Output a COMPLETE, visually stunning single-file HTML page. All CSS in <style>, 
     trackTokens(PIPES_MODEL, "Pipes", review.tokens);
     if (candyDir) trackTokens(CANDY_MODEL, "Candy", candyDir.tokens);
 
+    // 3c. Catch up with MaoMao — give 5 more seconds after Pipes, then move on
+    const maomaiResult = await Promise.race([
+      maomaiPromise,
+      sleep(5000).then(() => ({ text: "", tokens: 0, timedOut: true })),
+    ]);
+    if (maomaiResult.tokens) trackTokens(MAOMAI_MODEL, "MaoMao", maomaiResult.tokens);
+    if (maomaiResult.timedOut || !maomaiResult.text) {
+      console.log("[weirdbox-lab] MaoMao still thinking — proceeding without architect plan");
+    } else {
+      console.log(`[weirdbox-lab] MaoMao arch plan ready: ${maomaiResult.text.slice(0,80)}...`);
+    }
+
     let issues = [];
     try {
       const m = review.text?.match(/\[[\s\S]*\]/);
       if (m) issues = JSON.parse(m[0]);
-    } catch { if (review.text) issues = [{ description: review.text.slice(0,300), fix: "See description" }]; }
+    } catch (_e) { if (review.text) issues = [{ description: review.text.slice(0,300), fix: "See description" }]; }
 
     if (timeLeft() < budgetMs * 0.08) break;
 
-    // 3b. Build change summary
+    // 3d. Build change summary — Pipes + Candy + MaoMao (if ready)
     let changes = "";
     if (issues.length) changes += `PIPES REVIEW — fix these:\n${issues.map(i => `- [${i.type||"issue"}] ${i.description}: ${i.fix}`).join("\n")}\n\n`;
     if (candyDir?.text) changes += `CANDY DIRECTION:\n${candyDir.text}\n\n`;
+    if (maomaiResult.text) {
+      let archPlan = null;
+      try { archPlan = JSON.parse(maomaiResult.text.match(/\{[\s\S]*\}/)?.[0]); } catch (_e) { /* ignore */ }
+      if (archPlan?.priority_changes?.length) {
+        changes += `MAOMAI ARCH PLAN:\n${archPlan.priority_changes.map(c => `- ${c}`).join("\n")}`;
+        if (archPlan.tech_notes) changes += `\nTech notes: ${archPlan.tech_notes}`;
+        changes += "\n\n";
+      } else if (maomaiResult.text) {
+        changes += `MAOMAI NOTES:\n${maomaiResult.text.slice(0,300)}\n\n`;
+      }
+    }
     if (!changes) changes = `Improve the page. Scope: ${scope}. Add visual polish, content depth, or interactivity.`;
 
     // Context window: 32KB input sweet spot for large pages
@@ -469,7 +509,7 @@ Output a COMPLETE, visually stunning single-file HTML page. All CSS in <style>, 
         + codegenHtml.slice(-half);
     }
 
-    // 3c. Codegen (Qwen → Pipes fallback)
+    // 3e. Flash codegen (Gemini 2.0 → Pipes fallback)
     const applyResult = await codegenWithFallback({
       systemPrompt: CODEGEN_SOUL,
       userPrompt: `Apply these changes to the WEIRDBOX Lab page.
