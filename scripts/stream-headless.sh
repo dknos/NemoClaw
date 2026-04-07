@@ -36,7 +36,7 @@ set -euo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 CHROMIUM_BIN="$HOME/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome"
-FFMPEG_BIN="${FFMPEG_BIN:-$HOME/.local/bin/ffmpeg}"
+FFMPEG_BIN="${FFMPEG_BIN:-/usr/bin/ffmpeg}"
 ENV_FILE="$HOME/.nemoclaw_env"
 LIVE_JSON_WB="$HOME/netify-dev/public/data/weirdbox-lab-live.json"
 LIVE_JSON_MP="$HOME/netify-dev/public/data/mindpipes-live.json"
@@ -214,7 +214,7 @@ DISPLAY="$DISPLAY_NUM" "$CHROMIUM_BIN" \
 CHROME_PID=$!
 
 echo "[stream] Chromium PID: $CHROME_PID — waiting for page load..."
-sleep 4
+sleep 8
 
 if ! kill -0 "$CHROME_PID" 2>/dev/null; then
   echo "[stream] ERROR: Chromium crashed on startup. Log:"
@@ -231,7 +231,7 @@ echo "[stream] resolution: ${WIDTH}x${HEIGHT} @ ${FPS}fps | bitrate: ${BITRATE}k
 # Build audio: playlist > single file > silence
 FFMPEG_CONCAT_FILE=""
 AUDIO_INPUT_ARGS=()
-AUDIO_FILTER=""
+AUDIO_FILTER=()
 
 if [[ -n "$MUSIC_PLAYLIST" ]]; then
   if [[ ! -f "$MUSIC_PLAYLIST" ]]; then
@@ -256,7 +256,7 @@ if [[ -n "$MUSIC_PLAYLIST" ]]; then
     else
       echo "[stream] playlist: $track_count tracks (volume: ${MUSIC_VOLUME})"
       AUDIO_INPUT_ARGS=(-stream_loop -1 -f concat -safe 0 -i "$FFMPEG_CONCAT_FILE")
-      AUDIO_FILTER="-filter:a volume=${MUSIC_VOLUME}"
+      AUDIO_FILTER=(-filter:a "volume=${MUSIC_VOLUME}")
     fi
   fi
 fi
@@ -267,7 +267,7 @@ if [[ -z "${AUDIO_INPUT_ARGS[*]}" && -n "$MUSIC_FILE" ]]; then
   else
     echo "[stream] music: $(basename "$MUSIC_FILE") (volume: ${MUSIC_VOLUME}, looping)"
     AUDIO_INPUT_ARGS=(-stream_loop -1 -i "$MUSIC_FILE")
-    AUDIO_FILTER="-filter:a volume=${MUSIC_VOLUME}"
+    AUDIO_FILTER=(-filter:a "volume=${MUSIC_VOLUME}")
   fi
 fi
 
@@ -304,7 +304,7 @@ echo "[stream] ─────────────────────�
   -c:a aac \
   -b:a 128k \
   -ar 44100 \
-  ${AUDIO_FILTER:+$AUDIO_FILTER} \
+  "${AUDIO_FILTER[@]}" \
   \
   -f flv \
   "$RTMP_URL"
