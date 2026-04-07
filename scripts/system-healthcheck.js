@@ -127,7 +127,7 @@ function checkSyntax() {
     if (!fs.existsSync(fp)) continue;
     try {
       execSync(`node -c "${fp}" 2>&1`, { timeout: 10000 });
-    } catch (e) {
+    } catch (_e) {
       broken.push(`${s}: syntax error`);
     }
   }
@@ -157,19 +157,19 @@ function checkDisk() {
     const out = execSync("df -h / 2>/dev/null | tail -1", { timeout: 5000 }).toString();
     const m = out.match(/(\d+)%/);
     if (m && parseInt(m[1]) > 90) return `disk usage at ${m[1]}%`;
-  } catch {}
+  } catch { /* ignore */ }
   return null;
 }
 
 // 8. Log-based error detection (buttons, APIs, features)
 function checkLogs() {
-  const LOG_WINDOW = 5 * 60 * 1000; // look at last 5 minutes of logs
+  const _LOG_WINDOW = 5 * 60 * 1000; // look at last 5 minutes of logs
   const problems = [];
 
   // Read recent PM2 logs
   let errLog = "", outLog = "";
-  try { errLog = fs.readFileSync(path.join(os.homedir(), ".pm2/logs/discord-bridge-error.log"), "utf8"); } catch {}
-  try { outLog = fs.readFileSync(path.join(os.homedir(), ".pm2/logs/discord-bridge-out.log"), "utf8"); } catch {}
+  try { errLog = fs.readFileSync(path.join(os.homedir(), ".pm2/logs/discord-bridge-error.log"), "utf8"); } catch { /* ignore */ }
+  try { outLog = fs.readFileSync(path.join(os.homedir(), ".pm2/logs/discord-bridge-out.log"), "utf8"); } catch { /* ignore */ }
   const logs = errLog + "\n" + outLog;
 
   // Only look at recent lines (last ~200 lines as proxy for recency)
@@ -244,7 +244,7 @@ function checkAPIs() {
   try {
     const code = execSync(`curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://${comfyHost}:8188/system_stats 2>/dev/null`, { timeout: 5000 }).toString().trim();
     if (code === "000") problems.push(`ComfyUI not responding on ${comfyHost}:8188`);
-  } catch {}
+  } catch { /* ignore */ }
   return problems.length ? problems.join("\n") : null;
 }
 
@@ -266,7 +266,10 @@ const LAST_ISSUES_FILE = path.join(os.homedir(), ".nemoclaw", "healthcheck-last.
 
 if (issues.length === 0) {
   // Clear last issues on all-clear
-  try { fs.unlinkSync(LAST_ISSUES_FILE); } catch {}
+  try { fs.unlinkSync(LAST_ISSUES_FILE); } catch { /* ignore */ }
+  // Touch HEARTBEAT.md so backup-to-drive.sh knows the system is alive
+  const HEARTBEAT = path.join(os.homedir(), "nemoclaw-persist", "HEARTBEAT.md");
+  try { const now = new Date(); fs.utimesSync(HEARTBEAT, now, now); } catch { /* ignore */ }
   console.log("[healthcheck] all clear ✅");
   process.exit(0);
 }
@@ -274,7 +277,7 @@ if (issues.length === 0) {
 // Compare to last run — only post if issues changed
 const issueKey = issues.sort().join("\n");
 let lastKey = "";
-try { lastKey = JSON.parse(fs.readFileSync(LAST_ISSUES_FILE, "utf8")).key || ""; } catch {}
+try { lastKey = JSON.parse(fs.readFileSync(LAST_ISSUES_FILE, "utf8")).key || ""; } catch { /* ignore */ }
 
 if (issueKey === lastKey) {
   console.log(`[healthcheck] ${issues.length} known issue(s), already reported — skipping`);
@@ -282,7 +285,7 @@ if (issueKey === lastKey) {
 }
 
 // Save current issues
-try { fs.writeFileSync(LAST_ISSUES_FILE, JSON.stringify({ key: issueKey, ts: new Date().toISOString() })); } catch {}
+try { fs.writeFileSync(LAST_ISSUES_FILE, JSON.stringify({ key: issueKey, ts: new Date().toISOString() })); } catch { /* ignore */ }
 
 const report = `🐱 **MaoMao System Check** — ${issues.length} issue${issues.length > 1 ? "s" : ""} found:\n\n${issues.map(i => `⚠️ ${i}`).join("\n\n")}`;
 console.log(report);
