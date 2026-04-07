@@ -95,12 +95,13 @@ const liveState = {
   totalTokens: 0,
   totalCost: 0,
   pageSize: 0,
+  iterHistory: [], // [{iter, tokens, cost, sizeKb, elapsedMs}] for sparkline/table
   agents: {
-    Candy:  { status: "idle", lastMessage: "" },
-    Pipes:  { status: "idle", lastMessage: "" },
-    MaoMao: { status: "idle", lastMessage: "" },
-    Flash:  { status: "idle", lastMessage: "" },
-    Llama:  { status: "idle", lastMessage: "" },
+    Candy:  { status: "idle", lastMessage: "", tokens: 0 },
+    Pipes:  { status: "idle", lastMessage: "", tokens: 0 },
+    MaoMao: { status: "idle", lastMessage: "", tokens: 0 },
+    Flash:  { status: "idle", lastMessage: "", tokens: 0 },
+    Llama:  { status: "idle", lastMessage: "", tokens: 0 },
   },
   logs: [],
 };
@@ -134,89 +135,164 @@ const MONITOR_MARKER_END   = "<!-- __WEIRDBOX_MONITOR_END__ -->";
 
 const MONITOR_PANEL = `${MONITOR_MARKER_START}
 <style>
-#wbl-monitor{position:fixed;bottom:16px;right:16px;z-index:99999;font-family:'Courier New',monospace;font-size:11px;color:#00f5d4;background:rgba(0,0,0,.92);border:1px solid #00f5d4;border-radius:8px;width:340px;max-height:520px;display:flex;flex-direction:column;box-shadow:0 0 18px rgba(0,245,212,.25);transition:all .2s}
-#wbl-monitor.collapsed{max-height:36px;overflow:hidden}
-#wbl-header{display:flex;align-items:center;justify-content:space-between;padding:6px 10px;cursor:pointer;border-bottom:1px solid #00f5d424;user-select:none}
-#wbl-header span{font-weight:bold;letter-spacing:.5px}
-#wbl-toggle{background:none;border:none;color:#00f5d4;cursor:pointer;font-size:14px;padding:0}
-#wbl-stats{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:8px 10px;border-bottom:1px solid #00f5d424}
-.wbl-stat{display:flex;flex-direction:column}.wbl-stat .lbl{color:#ffffff55;font-size:9px;text-transform:uppercase;letter-spacing:.5px}.wbl-stat .val{color:#00f5d4;font-weight:bold}
-#wbl-agents{padding:6px 10px;border-bottom:1px solid #00f5d424;display:flex;flex-wrap:wrap;gap:4px}
-.wbl-agent{padding:2px 6px;border-radius:3px;font-size:10px;font-weight:bold;border:1px solid transparent}
-.wbl-agent.idle{color:#ffffff44;border-color:#ffffff22}
-.wbl-agent.vision,.wbl-agent.starting,.wbl-agent.reviewing,.wbl-agent.planning,.wbl-agent.coding,.wbl-agent.thinking,.wbl-agent.polishing{color:#000;background:#00f5d4;border-color:#00f5d4;animation:wbl-pulse 1s infinite}
-.wbl-agent.done{color:#00f5d4;border-color:#00f5d4}
-.wbl-agent.error{color:#ff6b9d;border-color:#ff6b9d}
-@keyframes wbl-pulse{0%,100%{opacity:1}50%{opacity:.6}}
-#wbl-logs{flex:1;overflow-y:auto;padding:6px 10px;max-height:220px}
-.wbl-log{padding:2px 0;border-bottom:1px solid #ffffff08;line-height:1.4}
-.wbl-log .wbl-time{color:#ffffff44;margin-right:4px}
-.wbl-log .wbl-tag{margin-right:4px;font-weight:bold}
-.wbl-log .wbl-tag.Candy{color:#ff6b9d}
-.wbl-log .wbl-tag.Pipes{color:#00f5d4}
-.wbl-log .wbl-tag.MaoMao{color:#ffd166}
-.wbl-log .wbl-tag.Flash{color:#06d6a0}
-.wbl-log .wbl-tag.Llama{color:#a78bfa}
-.wbl-log .wbl-tag.System{color:#ffffff88}
-#wbl-status{padding:4px 10px;font-size:10px;color:#ffffff55;border-top:1px solid #00f5d424;text-align:right}
+#wbl-m{position:fixed;bottom:16px;right:16px;z-index:99999;font-family:'Courier New',monospace;font-size:11px;color:#00f5d4;background:rgba(0,0,0,.94);border:1px solid #00f5d4;border-radius:8px;width:360px;display:flex;flex-direction:column;box-shadow:0 0 22px rgba(0,245,212,.3);transition:height .2s}
+#wbl-m.collapsed #wbl-body{display:none}
+#wbl-hdr{display:flex;align-items:center;justify-content:space-between;padding:7px 12px;cursor:pointer;user-select:none;border-bottom:1px solid #00f5d424}
+#wbl-hdr-left{display:flex;align-items:center;gap:8px}
+#wbl-hdr .title{font-weight:bold;letter-spacing:.5px;font-size:11px}
+#wbl-dot{width:7px;height:7px;border-radius:50%;background:#444}
+#wbl-dot.live{background:#00f5d4;box-shadow:0 0 6px #00f5d4;animation:wbl-blink 1.2s infinite}
+#wbl-dot.done{background:#06d6a0}
+@keyframes wbl-blink{0%,100%{opacity:1}50%{opacity:.3}}
+#wbl-collapse-btn{background:none;border:none;color:#00f5d4;cursor:pointer;font-size:13px;padding:0;line-height:1}
+#wbl-body{display:flex;flex-direction:column}
+#wbl-agents-bar{padding:6px 12px;border-bottom:1px solid #00f5d424;display:flex;flex-wrap:wrap;gap:4px}
+.wbl-ab{padding:2px 7px;border-radius:3px;font-size:10px;font-weight:bold;border:1px solid transparent;transition:all .2s}
+.wbl-ab.idle{color:#ffffff33;border-color:#ffffff11}
+.wbl-ab.vision,.wbl-ab.reviewing,.wbl-ab.planning,.wbl-ab.coding,.wbl-ab.thinking,.wbl-ab.polishing,.wbl-ab.starting{color:#000;background:#00f5d4;animation:wbl-blink .9s infinite}
+.wbl-ab.done{color:#00f5d4;border-color:#00f5d4}
+.wbl-ab.error{color:#ff6b9d;border-color:#ff6b9d}
+.wbl-ab.iteration,.wbl-ab.complete{color:#06d6a0;border-color:#06d6a0}
+#wbl-tabs{display:flex;border-bottom:1px solid #00f5d424}
+.wbl-tab{flex:1;padding:5px 0;text-align:center;cursor:pointer;font-size:10px;color:#ffffff55;letter-spacing:.5px;text-transform:uppercase;transition:color .15s}
+.wbl-tab:hover{color:#ffffff99}
+.wbl-tab.on{color:#00f5d4;border-bottom:2px solid #00f5d4}
+.wbl-tc{display:none;max-height:260px;overflow-y:auto}
+.wbl-tc.on{display:block}
+/* LOGS */
+#wbl-logs{padding:4px 10px}
+.wbl-log{padding:2px 0;border-bottom:1px solid #ffffff07;line-height:1.5}
+.wbl-log .wbl-t{color:#ffffff33;margin-right:4px;font-size:10px}
+.wbl-log .wbl-ag{margin-right:4px;font-weight:bold}
+.wbl-ag.Candy{color:#ff6b9d}.wbl-ag.Pipes{color:#00f5d4}.wbl-ag.MaoMao{color:#ffd166}.wbl-ag.Flash{color:#06d6a0}.wbl-ag.Llama{color:#a78bfa}.wbl-ag.System{color:#ffffff55}
+/* STATS */
+#wbl-stats{padding:8px 12px}
+.wbl-sg{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px}
+.wbl-sitem{display:flex;flex-direction:column}
+.wbl-sitem .sl{color:#ffffff44;font-size:9px;text-transform:uppercase;letter-spacing:.5px}
+.wbl-sitem .sv{color:#00f5d4;font-weight:bold;font-size:13px}
+.wbl-sdivider{border:none;border-top:1px solid #ffffff0f;margin:4px 0}
+#wbl-hist{font-size:10px;color:#ffffff55}
+.wbl-hr{display:grid;grid-template-columns:2ch 7ch 6ch 6ch 6ch;gap:4px;padding:2px 0;border-bottom:1px solid #ffffff07}
+.wbl-hr.hd{color:#ffffff44}
+/* AGENTS */
+#wbl-agent-cards{padding:6px 10px;display:flex;flex-direction:column;gap:6px}
+.wbl-ac{background:#ffffff08;border-radius:4px;padding:6px 8px}
+.wbl-ac-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px}
+.wbl-ac-name{font-weight:bold;font-size:11px}
+.wbl-ac-stat{color:#ffffff55;font-size:10px}
+.wbl-ac-msg{color:#ffffff66;font-size:10px;line-height:1.4;word-break:break-word}
+#wbl-footer{padding:3px 10px;font-size:10px;color:#ffffff33;border-top:1px solid #00f5d424;text-align:right}
 </style>
-<div id="wbl-monitor">
-  <div id="wbl-header" onclick="document.getElementById('wbl-monitor').classList.toggle('collapsed')">
-    <span>⚡ WEIRDBOX LAB MONITOR</span>
-    <button id="wbl-toggle">▲</button>
+<div id="wbl-m">
+  <div id="wbl-hdr">
+    <div id="wbl-hdr-left">
+      <div id="wbl-dot"></div>
+      <span class="title">⚡ WEIRDBOX LAB MONITOR</span>
+    </div>
+    <button id="wbl-collapse-btn" onclick="(function(){var m=document.getElementById('wbl-m'),c=m.classList.toggle('collapsed');localStorage.setItem('wbl-c',c?1:0);document.getElementById('wbl-collapse-btn').textContent=c?'▼':'▲'})()">▲</button>
   </div>
-  <div id="wbl-stats">
-    <div class="wbl-stat"><span class="lbl">Status</span><span class="val" id="wbl-s-status">—</span></div>
-    <div class="wbl-stat"><span class="lbl">Iteration</span><span class="val" id="wbl-s-iter">—</span></div>
-    <div class="wbl-stat"><span class="lbl">Time running</span><span class="val" id="wbl-s-time">—</span></div>
-    <div class="wbl-stat"><span class="lbl">Page size</span><span class="val" id="wbl-s-size">—</span></div>
-    <div class="wbl-stat"><span class="lbl">Tokens</span><span class="val" id="wbl-s-tokens">—</span></div>
-    <div class="wbl-stat"><span class="lbl">Cost</span><span class="val" id="wbl-s-cost">—</span></div>
+  <div id="wbl-body">
+    <div id="wbl-agents-bar"></div>
+    <div id="wbl-tabs">
+      <div class="wbl-tab on" data-tab="logs">Logs</div>
+      <div class="wbl-tab" data-tab="stats">Stats</div>
+      <div class="wbl-tab" data-tab="agents">Agents</div>
+    </div>
+    <div id="wbl-tc-logs" class="wbl-tc on"><div id="wbl-logs"></div></div>
+    <div id="wbl-tc-stats" class="wbl-tc"><div id="wbl-stats">
+      <div class="wbl-sg">
+        <div class="wbl-sitem"><span class="sl">Status</span><span class="sv" id="ws-status">—</span></div>
+        <div class="wbl-sitem"><span class="sl">Iteration</span><span class="sv" id="ws-iter">—</span></div>
+        <div class="wbl-sitem"><span class="sl">Build time</span><span class="sv" id="ws-time">—</span></div>
+        <div class="wbl-sitem"><span class="sl">Page size</span><span class="sv" id="ws-size">—</span></div>
+        <div class="wbl-sitem"><span class="sl">Total tokens</span><span class="sv" id="ws-tok">—</span></div>
+        <div class="wbl-sitem"><span class="sl">Est. cost</span><span class="sv" id="ws-cost">—</span></div>
+        <div class="wbl-sitem"><span class="sl">Tok / iter</span><span class="sv" id="ws-tpi">—</span></div>
+        <div class="wbl-sitem"><span class="sl">Iter / min</span><span class="sv" id="ws-ipm">—</span></div>
+      </div>
+      <hr class="wbl-sdivider">
+      <div id="wbl-hist">
+        <div class="wbl-hr hd"><span>#</span><span>elapsed</span><span>tokens</span><span>cost</span><span>KB</span></div>
+        <div id="wbl-hist-rows"></div>
+      </div>
+    </div></div>
+    <div id="wbl-tc-agents" class="wbl-tc"><div id="wbl-agent-cards"></div></div>
+    <div id="wbl-footer">polling…</div>
   </div>
-  <div id="wbl-agents"></div>
-  <div id="wbl-logs"></div>
-  <div id="wbl-status">polling...</div>
 </div>
 <script>
 (function(){
-  const COLORS={Candy:'#ff6b9d',Pipes:'#00f5d4',MaoMao:'#ffd166',Flash:'#06d6a0',Llama:'#a78bfa',System:'#ffffff88'};
-  let lastLogCount=0,collapsed=localStorage.getItem('wbl-collapsed')==='1';
-  if(collapsed)document.getElementById('wbl-monitor').classList.add('collapsed');
-  document.getElementById('wbl-header').addEventListener('click',()=>{
-    const c=document.getElementById('wbl-monitor').classList.toggle('collapsed');
-    localStorage.setItem('wbl-collapsed',c?'1':'0');
+  var AC={Candy:'#ff6b9d',Pipes:'#00f5d4',MaoMao:'#ffd166',Flash:'#06d6a0',Llama:'#a78bfa',System:'#ffffff55'};
+  var lastLog=0,curTab='logs';
+  if(localStorage.getItem('wbl-c')==='1'){
+    document.getElementById('wbl-m').classList.add('collapsed');
+    document.getElementById('wbl-collapse-btn').textContent='▼';
+  }
+  document.querySelectorAll('.wbl-tab').forEach(function(t){
+    t.addEventListener('click',function(){
+      document.querySelectorAll('.wbl-tab').forEach(function(x){x.classList.remove('on');});
+      document.querySelectorAll('.wbl-tc').forEach(function(x){x.classList.remove('on');});
+      t.classList.add('on');
+      document.getElementById('wbl-tc-'+t.dataset.tab).classList.add('on');
+      curTab=t.dataset.tab;
+    });
   });
-  function fmt(ms){const s=Math.floor(ms/1000),m=Math.floor(s/60);return m>0?m+'m '+(s%60)+'s':s+'s';}
-  function fmtNum(n){return n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(1)+'K':String(n);}
+  function fmt(ms){if(!ms)return'—';var s=Math.floor(ms/1000),m=Math.floor(s/60);return m>0?m+'m '+(s%60)+'s':s+'s';}
+  function fmtN(n){return n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(1)+'K':String(n||0);}
+  function esc(s){return String(s||'').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+  function render(d){
+    // Dot
+    var dot=document.getElementById('wbl-dot');
+    dot.className=d.status==='building'?'live':d.status==='complete'?'done':'';
+    // Agent badges
+    var ag=document.getElementById('wbl-agents-bar');
+    ag.innerHTML=Object.entries(d.agents||{}).map(function(e){
+      var n=e[0],a=e[1];
+      return '<div class="wbl-ab '+a.status+'" style="border-color:'+(AC[n]||'#fff')+'22" title="'+esc(a.lastMessage)+'"><span style="color:'+(AC[n]||'#aaa')+'">'+n+'</span></div>';
+    }).join('');
+    // Logs tab
+    var newLogs=(d.logs||[]).slice(lastLog);
+    if(newLogs.length){
+      var el=document.getElementById('wbl-logs');
+      newLogs.forEach(function(e){
+        var div=document.createElement('div');div.className='wbl-log';
+        var t=new Date(e.t).toLocaleTimeString('en',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+        div.innerHTML='<span class="wbl-t">'+t+'</span><span class="wbl-ag '+(e.agent||'System')+'">['+esc(e.agent||'SYS')+']</span>'+esc(e.msg);
+        el.appendChild(div);
+      });
+      if(curTab==='logs')el.scrollTop=el.scrollHeight;
+      lastLog=d.logs.length;
+    }
+    // Stats tab
+    var elap=d.startTime?Date.now()-d.startTime:0;
+    var ipm=elap>0&&d.iteration?((d.iteration/(elap/60000)).toFixed(1)):0;
+    var tpi=d.iteration>0?Math.round((d.totalTokens||0)/d.iteration):0;
+    document.getElementById('ws-status').textContent=d.status||'—';
+    document.getElementById('ws-iter').textContent=d.iteration||0;
+    document.getElementById('ws-time').textContent=fmt(elap);
+    document.getElementById('ws-size').textContent=d.pageSize?((d.pageSize/1024).toFixed(1)+'KB'):'—';
+    document.getElementById('ws-tok').textContent=fmtN(d.totalTokens);
+    document.getElementById('ws-cost').textContent='$'+(d.totalCost||0).toFixed(4);
+    document.getElementById('ws-tpi').textContent=fmtN(tpi);
+    document.getElementById('ws-ipm').textContent=ipm;
+    // History rows
+    var hist=d.iterHistory||[];
+    document.getElementById('wbl-hist-rows').innerHTML=hist.slice(-8).reverse().map(function(h){
+      return '<div class="wbl-hr"><span>'+h.iter+'</span><span>'+fmt(h.elapsedMs)+'</span><span>'+fmtN(h.tokens)+'</span><span>$'+((h.cost||0).toFixed(3))+'</span><span>'+h.sizeKb+'</span></div>';
+    }).join('');
+    // Agents tab
+    document.getElementById('wbl-agent-cards').innerHTML=Object.entries(d.agents||{}).map(function(e){
+      var n=e[0],a=e[1],col=AC[n]||'#fff';
+      return '<div class="wbl-ac"><div class="wbl-ac-hdr"><span class="wbl-ac-name" style="color:'+col+'">'+n+'</span><span class="wbl-ac-stat">'+fmtN(a.tokens||0)+' tok &nbsp; <span class="wbl-ab '+a.status+'" style="font-size:9px;padding:1px 5px">'+a.status+'</span></span></div>'+(a.lastMessage?'<div class="wbl-ac-msg">'+esc(a.lastMessage)+'</div>':'')+'</div>';
+    }).join('');
+    document.getElementById('wbl-footer').textContent='updated '+new Date(d.lastUpdate||Date.now()).toLocaleTimeString();
+  }
   async function poll(){
     try{
-      const r=await fetch('/data/weirdbox-lab-live.json?_='+Date.now());
-      if(!r.ok)return;
-      const d=await r.json();
-      document.getElementById('wbl-s-status').textContent=d.status||'—';
-      document.getElementById('wbl-s-iter').textContent=d.iteration||'0';
-      document.getElementById('wbl-s-time').textContent=d.startTime?fmt(Date.now()-d.startTime):'—';
-      document.getElementById('wbl-s-size').textContent=d.pageSize?((d.pageSize/1024).toFixed(1)+'KB'):'—';
-      document.getElementById('wbl-s-tokens').textContent=fmtNum(d.totalTokens||0);
-      document.getElementById('wbl-s-cost').textContent='$'+(d.totalCost||0).toFixed(4);
-      const ag=document.getElementById('wbl-agents');
-      ag.innerHTML=Object.entries(d.agents||{}).map(([n,a])=>
-        '<div class="wbl-agent '+a.status+'" title="'+a.lastMessage+'">'+n+'</div>'
-      ).join('');
-      const newLogs=(d.logs||[]).slice(lastLogCount);
-      if(newLogs.length){
-        const el=document.getElementById('wbl-logs');
-        newLogs.forEach(e=>{
-          const div=document.createElement('div');div.className='wbl-log';
-          const t=new Date(e.t).toLocaleTimeString('en',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
-          div.innerHTML='<span class="wbl-time">'+t+'</span><span class="wbl-tag '+(e.agent||'System')+'">['+(e.agent||'SYS')+']</span>'+e.msg;
-          el.appendChild(div);
-        });
-        el.scrollTop=el.scrollHeight;
-        lastLogCount=d.logs.length;
-      }
-      document.getElementById('wbl-status').textContent='updated '+new Date(d.lastUpdate).toLocaleTimeString();
-    }catch(e){document.getElementById('wbl-status').textContent='offline';}
+      var r=await fetch('/data/weirdbox-lab-live.json?_='+Date.now());
+      if(r.ok)render(await r.json());
+    }catch(e){document.getElementById('wbl-footer').textContent='offline';}
   }
   poll();setInterval(poll,3000);
 })();
@@ -251,7 +327,21 @@ function trackTokens(model, agent, tokens) {
   totalTokens += tokens;
   const { cost } = estimateCost(model, tokens * 0.6, tokens * 0.4);
   totalCost += cost;
+  // Track per-agent — normalize "Pipes[codegen]" → "Pipes"
+  const agentKey = agent.split("[")[0];
+  if (liveState.agents[agentKey]) liveState.agents[agentKey].tokens += tokens;
   console.log(`[weirdbox-lab] ${agent} (${model.split("/").pop()}): ${tokens} tokens`);
+}
+
+function snapshotIteration() {
+  liveState.iterHistory.push({
+    iter: liveState.iteration,
+    tokens: totalTokens,
+    cost: totalCost,
+    sizeKb: currentHtml ? parseFloat((currentHtml.length / 1024).toFixed(1)) : 0,
+    elapsedMs: Date.now() - startTime,
+  });
+  if (liveState.iterHistory.length > 50) liveState.iterHistory = liveState.iterHistory.slice(-40);
 }
 
 // ── Time helpers ─────────────────────────────────────────────────────
@@ -760,6 +850,8 @@ ${currentHtml.length > 20000
       notifyDiscord(`**[weirdbox-lab]** ⚠️ Token budget hit (${totalTokens.toLocaleString()} tokens) — stopping`);
       break;
     }
+
+    snapshotIteration();
 
     // Per-iteration status every 2 iterations
     if (iterNum % 2 === 0) {
