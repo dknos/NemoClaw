@@ -62,10 +62,10 @@ async function callOpenRouterSDK({ model, systemPrompt, userPrompt, maxTokens = 
         reasoningTokens = chunk.usage.reasoningTokens || 0;
       }
     }
-    if (reasoningTokens > 0) console.log(`[weirdbox-lab] MaoMao reasoning tokens: ${reasoningTokens}`);
+    if (reasoningTokens > 0) console.log(`${TAG} MaoMao reasoning tokens: ${reasoningTokens}`);
     return { text: text.trim(), tokens: totalTok || Math.ceil(text.length / 4), durationMs: Date.now() - t0, statusCode: 200 };
   } catch (e) {
-    console.warn(`[weirdbox-lab] OpenRouter SDK error: ${e.message}`);
+    console.warn(`${TAG} OpenRouter SDK error: ${e.message}`);
     return { text: "", tokens: 0, durationMs: Date.now() - t0, statusCode: 0 };
   }
 }
@@ -85,22 +85,18 @@ async function getVertexToken() {
     _vtx = t.token; _vtxExp = Date.now() + 3500000;
     return _vtx;
   } catch (e) {
-    console.warn(`[weirdbox-lab] Vertex token error: ${e.message}`);
+    console.warn(`${TAG} Vertex token error: ${e.message}`);
     return null;
   }
 }
 
 // ── Models ───────────────────────────────────────────────────────────
-// Candy  = creative director with screenshot vision
-// Pipes  = team lead + visual critic + codegen fallback
-// MaoMao = primary codegen (Qwen 3.6 via OpenRouter)
-// Llama  = extra improvement pass
-const CANDY_MODEL  = "gemini-3.1-flash-lite-preview";                 // Vertex Gemini — vision + direction
-const PIPES_MODEL  = "gemini-3.1-flash-lite-preview";                 // Vertex Gemini — reviewer + codegen fallback
-const MAOMAI_MODEL = "qwen/qwen3.6-plus:free";                        // OpenRouter — architect (async, don't block)
-const LLAMA_MODEL  = "meta-llama/llama-4-maverick";                   // OpenRouter — polish pass (no MaaS token cap)
+const CANDY_MODEL  = "gemini-3.1-flash-lite-preview";
+const PIPES_MODEL  = "gemini-3.1-flash-lite-preview";
+const MAOMAI_MODEL = "qwen/qwen3.6-plus:free";
+const LLAMA_MODEL  = "meta-llama/llama-4-maverick";
 
-const MAOMAI_TIMEOUT_MS = 50000; // max wait for Qwen — if it's not done, proceed without it
+const MAOMAI_TIMEOUT_MS = 50000;
 
 const VERTEX_PROJECT = "drivenemo";
 const VERTEX_REGION  = "us-east5";
@@ -111,12 +107,23 @@ function getProvider(model) {
   return "openrouter";
 }
 
-// ── Paths ────────────────────────────────────────────────────────────
-const TARGET_FILE  = path.join(os.homedir(), "netify-dev", "public", "weirdbox-lab.html");
-const BRIEFS_DIR   = path.join(__dirname, "workshop-briefs");
-const BRIEF_FILE   = path.join(BRIEFS_DIR, "weirdbox.md");
-const STATE_FILE   = path.join(os.homedir(), "netify-dev", "public", "data", "weirdbox-lab-state.json");
-const LIVE_FILE    = path.join(os.homedir(), "netify-dev", "public", "data", "weirdbox-lab-live.json");
+// ── Build target alternation ─────────────────────────────────────────
+const BRIEFS_DIR  = path.join(__dirname, "workshop-briefs");
+const CYCLE_FILE  = path.join(os.homedir(), "netify-dev", "public", "data", "builder-cycle.json");
+let _cycleData = { cycle: 0 };
+try { _cycleData = JSON.parse(fs.readFileSync(CYCLE_FILE, "utf8")); } catch (_e) { /* first run */ }
+const BUILD_TARGET = _cycleData.cycle % 2 === 0 ? "weirdbox-lab" : "mindpipes";
+_cycleData.cycle   = (_cycleData.cycle + 1) % 10000;
+try { fs.writeFileSync(CYCLE_FILE, JSON.stringify(_cycleData)); } catch (_e) { /* ignore */ }
+const TAG = `[${BUILD_TARGET}]`;
+console.log(`${TAG} === START ===`);
+
+// ── Paths (target-dependent) ─────────────────────────────────────────
+const SITE_ROOT   = path.join(os.homedir(), "netify-dev", "public");
+const TARGET_FILE = path.join(SITE_ROOT, `${BUILD_TARGET}.html`);
+const LIVE_FILE   = path.join(SITE_ROOT, "data", `${BUILD_TARGET}-live.json`);
+const STATE_FILE  = path.join(SITE_ROOT, "data", `${BUILD_TARGET}-state.json`);
+const BRIEF_FILE  = path.join(BRIEFS_DIR, `${BUILD_TARGET}.md`);
 fs.mkdirSync(path.dirname(LIVE_FILE), { recursive: true });
 
 // ── Live telemetry state ─────────────────────────────────────────────
@@ -156,7 +163,7 @@ function logAgent(agent, phase, message) {
   liveState.logs.push(entry);
   if (liveState.logs.length > 120) liveState.logs = liveState.logs.slice(-100); // keep last 100
   if (liveState.agents[agent]) liveState.agents[agent] = { status: phase, lastMessage: message.slice(0, 120) };
-  console.log(`[weirdbox-lab] [${agent}:${phase}] ${message.slice(0,80)}`);
+  console.log(`${TAG} [${agent}:${phase}] ${message.slice(0,80)}`);
   writeLiveState();
 }
 
@@ -421,7 +428,7 @@ ${MONITOR_MARKER_END}`;
 
 // Guard: refuse to touch production file (should never reach here, but just in case)
 if (process.argv.includes("weirdbox-game.html") || process.argv.includes("weirdbox.html")) {
-  console.error("[weirdbox-lab] REFUSED: weirdbox-game.html is production-frozen. Exiting.");
+  console.error(`${TAG} REFUSED: weirdbox-game.html is production-frozen. Exiting.`);
   process.exit(1);
 }
 
@@ -437,9 +444,9 @@ const brief = fs.existsSync(BRIEF_FILE) ? fs.readFileSync(BRIEF_FILE, "utf8").sl
 
 // ── Load current page ────────────────────────────────────────────────
 let currentHtml = fs.existsSync(TARGET_FILE) ? fs.readFileSync(TARGET_FILE, "utf8") : "";
-console.log(`[weirdbox-lab] === START ===`);
-console.log(`[weirdbox-lab] Current page: ${(currentHtml.length / 1024).toFixed(1)}KB`);
-console.log(`[weirdbox-lab] Budget: ${(budgetMs / 60000).toFixed(0)} min | Triggered by: ${triggeredBy}`);
+console.log(`${TAG} === START ===`);
+console.log(`${TAG} Current page: ${(currentHtml.length / 1024).toFixed(1)}KB`);
+console.log(`${TAG} Budget: ${(budgetMs / 60000).toFixed(0)} min | Triggered by: ${triggeredBy}`);
 
 // ── Telemetry ────────────────────────────────────────────────────────
 let totalTokens = 0, totalCost = 0;
@@ -450,7 +457,7 @@ function trackTokens(model, agent, tokens) {
   // Track per-agent — normalize "Pipes[codegen]" → "Pipes"
   const agentKey = agent.split("[")[0];
   if (liveState.agents[agentKey]) liveState.agents[agentKey].tokens += tokens;
-  console.log(`[weirdbox-lab] ${agent} (${model.split("/").pop()}): ${tokens} tokens`);
+  console.log(`${TAG} ${agent} (${model.split("/").pop()}): ${tokens} tokens`);
 }
 
 function snapshotIteration() {
@@ -485,7 +492,7 @@ async function takeScreenshot() {
     await browser.close();
     return buf.toString("base64");
   } catch (e) {
-    console.warn(`[weirdbox-lab] Screenshot failed: ${e.message}`);
+    console.warn(`${TAG} Screenshot failed: ${e.message}`);
     return null;
   }
 }
@@ -528,15 +535,15 @@ async function _callOnce({ model, systemPrompt, userPrompt, maxTokens = 4000, te
             const text = parts.filter(p => p.text).map(p => p.text).join("").trim() || "";
             const usage = json.usageMetadata || {};
             const tokens = (usage.promptTokenCount || 0) + (usage.candidatesTokenCount || 0);
-            if (!text) console.warn(`[weirdbox-lab] Gemini empty, finish=${json.candidates?.[0]?.finishReason}, status=${res.statusCode}`);
+            if (!text) console.warn(`${TAG} Gemini empty, finish=${json.candidates?.[0]?.finishReason}, status=${res.statusCode}`);
             resolve({ text, tokens, durationMs, statusCode: res.statusCode });
           } catch (e) {
-            console.warn(`[weirdbox-lab] Gemini parse error: ${e.message}`);
+            console.warn(`${TAG} Gemini parse error: ${e.message}`);
             resolve({ text: "", tokens: 0, durationMs, statusCode: res.statusCode });
           }
         });
       });
-      req.on("error", e => { console.warn(`[weirdbox-lab] Gemini error: ${e.message}`); resolve({ text: "", tokens: 0, durationMs: 0, statusCode: 0 }); });
+      req.on("error", e => { console.warn(`${TAG} Gemini error: ${e.message}`); resolve({ text: "", tokens: 0, durationMs: 0, statusCode: 0 }); });
       req.setTimeout(240000, () => { req.destroy(); resolve({ text: "", tokens: 0, durationMs: 240000, statusCode: 0 }); });
       req.end(body);
     });
@@ -584,16 +591,16 @@ async function _callOnce({ model, systemPrompt, userPrompt, maxTokens = 4000, te
           const json = JSON.parse(data);
           const text = json.choices?.[0]?.message?.content?.trim() || "";
           const tokens = json.usage?.total_tokens || 0;
-          if (!text) console.warn(`[weirdbox-lab] empty from ${model} (${provider}), status=${res.statusCode}, body=${data.slice(0,300)}`);
+          if (!text) console.warn(`${TAG} empty from ${model} (${provider}), status=${res.statusCode}, body=${data.slice(0,300)}`);
           resolve({ text, tokens, durationMs, statusCode: res.statusCode });
         } catch (e) {
-          console.warn(`[weirdbox-lab] parse error from ${model}: ${e.message}`);
+          console.warn(`${TAG} parse error from ${model}: ${e.message}`);
           resolve({ text: "", tokens: 0, durationMs, statusCode: res.statusCode });
         }
       });
     });
-    req.on("error", e => { console.warn(`[weirdbox-lab] request error: ${e.message}`); resolve({ text: "", tokens: 0, durationMs: 0, statusCode: 0 }); });
-    req.setTimeout(240000, () => { req.destroy(); console.warn(`[weirdbox-lab] timeout: ${model}`); resolve({ text: "", tokens: 0, durationMs: 240000, statusCode: 0 }); });
+    req.on("error", e => { console.warn(`${TAG} request error: ${e.message}`); resolve({ text: "", tokens: 0, durationMs: 0, statusCode: 0 }); });
+    req.setTimeout(240000, () => { req.destroy(); console.warn(`${TAG} timeout: ${model}`); resolve({ text: "", tokens: 0, durationMs: 240000, statusCode: 0 }); });
     req.end(payload);
   });
 }
@@ -604,7 +611,7 @@ async function callLLM(opts) {
     if (result.text) return result;
     if (result.statusCode === 429 || result.statusCode === 0) {
       const delay = (attempt + 1) * 15000;
-      console.log(`[weirdbox-lab] retry ${attempt+1}/3 for ${opts.model} after ${delay/1000}s`);
+      console.log(`${TAG} retry ${attempt+1}/3 for ${opts.model} after ${delay/1000}s`);
       await sleep(delay);
       continue;
     }
@@ -655,21 +662,21 @@ function applyDiff(base, diffText) {
   return count > 0 && isValidHtml(patched) ? patched : null;
 }
 
-// ── Agent souls ──────────────────────────────────────────────────────
-const CANDY_SOUL = `You are Candy — creative director for WEIRDBOX. You look at screenshots and HTML to give sharp, specific visual direction. You have strong taste and see exactly what needs to change. Brief responses. No fluff.`;
+// ── Agent souls — WEIRDBOX ────────────────────────────────────────────
+const WB_CANDY_SOUL = `You are Candy — creative director for WEIRDBOX. You look at screenshots and HTML to give sharp, specific visual direction. You have strong taste and see exactly what needs to change. Brief responses. No fluff.`;
 
-const PIPES_SOUL = `You are Pipes — senior engineer and visual perfectionist for WEIRDBOX. You review HTML pages for code bugs, design quality, UX, animation polish, and "wow factor." You're exact: name CSS properties, hex values, easing curves, pixel values.
+const WB_PIPES_SOUL = `You are Pipes — senior engineer and visual perfectionist for WEIRDBOX. You review HTML pages for code bugs, design quality, UX, animation polish, and "wow factor." You're exact: name CSS properties, hex values, easing curves, pixel values.
 
 Return EXACTLY a JSON array (max 5 issues):
 [{"priority":1-5,"type":"bug"|"design"|"ux"|"animation","description":"what's wrong","fix":"exact specific fix"}]
 Return ONLY the JSON array.`;
 
-const MAOMAI_SOUL = `You are MaoMao — architect for WEIRDBOX. You analyze the current page and plan specific technical improvements. You don't write code, you write precise implementation specs for the coder.
+const WB_MAOMAI_SOUL = `You are MaoMao — architect for WEIRDBOX. You analyze the current page and plan specific technical improvements. You don't write code, you write precise implementation specs for the coder.
 
 Return ONLY a JSON object:
 {"priority_changes": ["specific change 1", "specific change 2", "specific change 3"], "tech_notes": "CSS/JS implementation hints, exact properties/values"}`;
 
-const CODEGEN_SOUL = `You are Pipes — coder for WEIRDBOX. You receive a plan and apply it to the HTML page precisely.
+const WB_CODEGEN_SOUL = `You are Pipes — coder for WEIRDBOX. You receive a plan and apply it to the HTML page precisely.
 
 For pages <20KB: Output the COMPLETE HTML from <!DOCTYPE html> to </html>.
 For pages >20KB: Output ONLY changed sections as SEARCH/REPLACE blocks:
@@ -681,11 +688,61 @@ replacement code
 
 Rules: apply requested changes precisely. Preserve everything else. Use modern CSS (grid, flexbox, custom properties, transitions). Multiple changes = multiple blocks.`;
 
+// ── Agent souls — MINDPIPES ───────────────────────────────────────────
+const MP_CANDY_SOUL = `You are Candy — art & culture editor at MindPipes, the crew's publication. You review the site and suggest new content to add this cycle: art drops, visual features, aesthetic improvements. You have strong taste and a nose for what's visually interesting on the internet right now. Be specific.`;
+
+const MP_PIPES_SOUL = `You are Pipes — tech editor at MindPipes. You review the site for layout bugs, missing content, navigation issues, and areas where new posts would improve the page. You also cover tech/AI/systems beats.
+
+Return EXACTLY a JSON array (max 5 items):
+[{"priority":1-5,"type":"content"|"bug"|"layout"|"ux","description":"what's needed","fix":"specific action to take"}]
+Return ONLY the JSON array.`;
+
+const MP_MAOMAI_SOUL = `You are MaoMao — content strategist at MindPipes. You plan what the crew should post this cycle. Research and brainstorm from your knowledge of tech, internet culture, history, science, art, gaming, trends, and viral moments.
+
+Return ONLY a JSON object:
+{
+  "posts": [
+    {"type": "article|art|vibes|trend|video|history", "topic": "specific topic", "angle": "what angle to take", "agent": "Candy|Pipes|MaoMao|Llama", "category": "TECH|ART|CULTURE|HISTORY|VIBES|SCIENCE"},
+    {"type": "...", "topic": "...", "angle": "...", "agent": "...", "category": "..."}
+  ],
+  "layout_notes": "any layout improvements to make this cycle"
+}
+Plan 1-3 posts. Make them genuinely interesting.`;
+
+const MP_CODEGEN_SOUL = `You are Pipes — web developer for MindPipes, the crew's NES-styled variety publication.
+
+MindPipes visual identity:
+- Colors: bg #0d0d1a, panels #12122a, borders #1e1e40, red #e60012, gold #fcbc04, teal #00e5ff, text #f0e8d0
+- Fonts: "Press Start 2P" for headers/logo, "VT323" for body (both from Google Fonts)
+- NES card style: box-shadow: 4px 4px 0 #e60012 on cards, pixel borders
+- Cards hover: transform: translate(-2px,-2px) with shadow shift
+- Tags: NES chip style [TAG] in pixel font
+- Scanline overlay on header
+
+For pages <20KB: Output the COMPLETE HTML from <!DOCTYPE html> to </html>.
+For pages >20KB: Output ONLY changed sections as SEARCH/REPLACE blocks:
+<<<SEARCH
+exact code to find
+>>>REPLACE
+replacement code
+<<<END
+
+When adding posts: PREPEND new posts to the grid (newest first). Preserve existing posts.
+Each post needs: category tag, agent byline (emoji+name), timestamp, headline, body content, tags.
+Make post content genuinely interesting and well-written.`;
+
+// ── Select souls based on target ─────────────────────────────────────
+const CANDY_SOUL   = BUILD_TARGET === "mindpipes" ? MP_CANDY_SOUL   : WB_CANDY_SOUL;
+const PIPES_SOUL   = BUILD_TARGET === "mindpipes" ? MP_PIPES_SOUL   : WB_PIPES_SOUL;
+const MAOMAI_SOUL  = BUILD_TARGET === "mindpipes" ? MP_MAOMAI_SOUL  : WB_MAOMAI_SOUL;
+const CODEGEN_SOUL = BUILD_TARGET === "mindpipes" ? MP_CODEGEN_SOUL : WB_CODEGEN_SOUL;
+
 // ── Write output ─────────────────────────────────────────────────────
 function writeLabFile(html) {
-  if (!isValidHtml(html)) { console.warn("[weirdbox-lab] Refusing to write invalid HTML"); return false; }
-  if (!TARGET_FILE.includes("weirdbox-lab")) {
-    console.error("[weirdbox-lab] SAFETY: target path doesn't contain 'weirdbox-lab' — refusing write");
+  if (!isValidHtml(html)) { console.warn(`${TAG} Refusing to write invalid HTML`); return false; }
+  const allowed = ["weirdbox-lab.html", "mindpipes.html"];
+  if (!allowed.some(f => TARGET_FILE.endsWith(f))) {
+    console.error(`${TAG} SAFETY: target "${path.basename(TARGET_FILE)}" not in allowed list — refusing write`);
     return false;
   }
   // Strip any previous monitor panel, then re-inject fresh before </body>
@@ -694,7 +751,7 @@ function writeLabFile(html) {
     ? stripped.replace("</body>", MONITOR_PANEL + "\n</body>")
     : stripped + "\n" + MONITOR_PANEL;
   fs.writeFileSync(TARGET_FILE, injected, "utf8");
-  console.log(`[weirdbox-lab] Wrote ${(injected.length/1024).toFixed(1)}KB to weirdbox-lab.html`);
+  console.log(`${TAG} Wrote ${(injected.length/1024).toFixed(1)}KB to ${path.basename(TARGET_FILE)}`);
   writeLiveState();
   return true;
 }
@@ -719,17 +776,18 @@ async function build() {
   let iterNum = 0;
 
   liveState.status = "starting";
+  liveState.target = BUILD_TARGET;
   writeLiveState();
-  notifyDiscord(`**[weirdbox-lab]** 🚀 **Starting** — ${(budgetMs/60000).toFixed(0)}-min cycle | page: ${(currentHtml.length/1024).toFixed(1)}KB | triggered by: ${triggeredBy}`);
-  logAgent("System", "starting", `Build cycle started. Budget: ${(budgetMs/60000).toFixed(0)}min. Page: ${(currentHtml.length/1024).toFixed(1)}KB`);
+  notifyDiscord(`**${TAG}** 🚀 **Starting** — ${(budgetMs/60000).toFixed(0)}-min cycle | page: ${(currentHtml.length/1024).toFixed(1)}KB | triggered by: ${triggeredBy}`);
+  logAgent("System", "starting", `Build cycle started. Target: ${BUILD_TARGET}. Budget: ${(budgetMs/60000).toFixed(0)}min. Page: ${(currentHtml.length/1024).toFixed(1)}KB`);
 
   // Phase 1: Candy vision — screenshot + direction
-  console.log("[weirdbox-lab] Phase 1: Candy vision (screenshot)");
+  console.log(`${TAG} Phase 1: Candy vision (screenshot)`);
   const screenshot = await takeScreenshot();
   if (screenshot) {
-    console.log(`[weirdbox-lab] Screenshot: ${(screenshot.length/1024).toFixed(0)}KB base64`);
+    console.log(`${TAG} Screenshot: ${(screenshot.length/1024).toFixed(0)}KB base64`);
   } else {
-    console.warn("[weirdbox-lab] No screenshot — Candy will work from HTML only");
+    console.warn(`${TAG} No screenshot — Candy will work from HTML only`);
   }
 
   const candyVisionPrompt = screenshot
@@ -750,16 +808,27 @@ async function build() {
   trackTokens(CANDY_MODEL, "Candy", vision.tokens);
   if (vision.text) {
     logAgent("Candy", "done", vision.text.slice(0, 180));
-    notifyDiscord(`**[weirdbox-lab]** 🍬 **Candy's plan** (${screenshot ? "saw screenshot" : "HTML only"}):\n> ${vision.text.slice(0,400).replace(/\n/g, "\n> ")}`);
+    notifyDiscord(`**${TAG}** 🍬 **Candy's plan** (${screenshot ? "saw screenshot" : "HTML only"}):\n> ${vision.text.slice(0,400).replace(/\n/g, "\n> ")}`);
   } else {
     logAgent("Candy", "error", "Returned nothing — proceeding without vision direction");
-    notifyDiscord("**[weirdbox-lab]** ⚠️ Candy returned nothing — proceeding without vision");
+    notifyDiscord(`**${TAG}** ⚠️ Candy returned nothing — proceeding without vision`);
   }
 
   // Phase 2: if no current HTML, generate from scratch
   if (!isValidHtml(currentHtml)) {
-    console.log("[weirdbox-lab] No valid current HTML — generating from scratch");
-    const genPrompt = `Build a complete WEIRDBOX game page based on the brief and Candy's direction.
+    console.log(`${TAG} No valid current HTML — generating from scratch`);
+    const scratchPrompt = BUILD_TARGET === "mindpipes"
+      ? `Build the first version of MindPipes — the crew's NES-styled variety publication.
+
+CANDY'S DIRECTION:
+${vision.text || "Build a dense, NES-styled news/blog/entertainment hub."}
+
+${brief ? `BRIEF:\n${brief.slice(0,6000)}\n` : ""}
+
+Include: header with nav, featured hero post, 3-card post grid, sidebar with trending + agent status, archive strip, footer.
+Write 3-4 real posts as initial content. Make the posts genuinely interesting.
+Output a COMPLETE single-file HTML page. Google Fonts (Press Start 2P + VT323). Font Awesome CDN. Responsive.`
+      : `Build a complete WEIRDBOX game page based on the brief and Candy's direction.
 
 CANDY'S DIRECTION:
 ${vision.text || "Build a visually striking, playful WEIRDBOX game page."}
@@ -769,21 +838,21 @@ ${brief ? `BRIEF:\n${brief.slice(0,6000)}\n` : ""}
 Output a COMPLETE, visually stunning single-file HTML page. All CSS in <style>, all JS in <script>. Use Google Fonts and Font Awesome CDN. Responsive. Smooth CSS animations. Make it impressive.`;
 
     const genResult = await codegenWithFallback({
-      systemPrompt: CODEGEN_SOUL, userPrompt: genPrompt,
-      maxTokens: 16384, temperature: 0.4, _agent: "MaoMao",
+      systemPrompt: CODEGEN_SOUL, userPrompt: scratchPrompt,
+      maxTokens: 16384, temperature: 0.4, _agent: "Pipes",
     });
     const genHtml = extractHtml(genResult.text);
     if (isValidHtml(genHtml)) {
       currentHtml = genHtml;
       writeLabFile(currentHtml);
     } else {
-      notifyDiscord("**[weirdbox-lab-builder]** ❌ Initial generation failed. Exiting.");
+      notifyDiscord(`**${TAG}** ❌ Initial generation failed. Exiting.`);
       return;
     }
   }
 
   // Phase 3+: Improvement loop
-  console.log("[weirdbox-lab] Phase 3: Improvement loop");
+  console.log(`${TAG} Phase 3: Improvement loop`);
 
   while (timeLeft() > budgetMs * 0.08) {
     iterNum++;
@@ -796,11 +865,14 @@ Output a COMPLETE, visually stunning single-file HTML page. All CSS in <style>, 
     const summary = summarizeHtml(currentHtml);
     liveState.agents.MaoMao.status = "thinking";
     writeLiveState();
+    const maomaiUserPrompt = BUILD_TARGET === "mindpipes"
+      ? `MindPipes publication. Scope: ${scope}. Time left: ${timeLeftStr()}.\nPage summary: ${summary}\n\nPlan what to add/improve this iteration. What posts should the crew write?`
+      : `WEIRDBOX Lab page. Scope: ${scope}. Time left: ${timeLeftStr()}.\nPage summary: ${summary}\n\nPlan the next improvements.`;
     const maomaiPromise = Promise.race([
       callLLM({
         model: MAOMAI_MODEL, systemPrompt: MAOMAI_SOUL,
-        userPrompt: `WEIRDBOX Lab page. Scope: ${scope}. Time left: ${timeLeftStr()}.\nPage summary: ${summary}\n\nPlan the next improvements.`,
-        maxTokens: 600, temperature: 0.4, _agent: "MaoMao",
+        userPrompt: maomaiUserPrompt,
+        maxTokens: 800, temperature: 0.4, _agent: "MaoMao",
       }),
       sleep(MAOMAI_TIMEOUT_MS).then(() => ({ text: "", tokens: 0, timedOut: true })),
     ]);
@@ -813,16 +885,17 @@ Output a COMPLETE, visually stunning single-file HTML page. All CSS in <style>, 
       ? currentHtml.slice(0, 3000) + "\n\n<!-- ...middle truncated... -->\n\n" + currentHtml.slice(-3000)
       : currentHtml;
 
+    const siteName = BUILD_TARGET === "mindpipes" ? "MindPipes" : "WEIRDBOX Lab";
     const [review, candyDir] = await Promise.all([
       callLLM({
         model: PIPES_MODEL, systemPrompt: PIPES_SOUL,
-        userPrompt: `Review this WEIRDBOX Lab page. Scope: ${scope}. Time left: ${timeLeftStr()}.\nSummary: ${summary}\n\nHTML:\n${reviewHtml}`,
+        userPrompt: `Review this ${siteName} page. Scope: ${scope}. Time left: ${timeLeftStr()}.\nSummary: ${summary}\n\nHTML:\n${reviewHtml}`,
         maxTokens: 600, temperature: 0.15, _agent: "Pipes",
       }),
       iterNum % 2 === 0
         ? callLLM({
             model: CANDY_MODEL, systemPrompt: CANDY_SOUL,
-            userPrompt: `WEIRDBOX Lab — scope: ${scope}, ${timeLeftStr()} left.\nSummary: ${summary}\n\n${vision.text ? `Original direction: ${vision.text.slice(0,200)}\n\n` : ""}Suggest ONE specific ${scope === "polish" ? "polish" : "enhancement"}.`,
+            userPrompt: `${siteName} — scope: ${scope}, ${timeLeftStr()} left.\nSummary: ${summary}\n\n${vision.text ? `Original direction: ${vision.text.slice(0,200)}\n\n` : ""}Suggest ONE specific ${scope === "polish" ? "polish" : "enhancement"}.`,
             maxTokens: 300, temperature: 0.8, _agent: "Candy",
           })
         : Promise.resolve(null),
@@ -839,10 +912,10 @@ Output a COMPLETE, visually stunning single-file HTML page. All CSS in <style>, 
     ]);
     if (maomaiResult.tokens) trackTokens(MAOMAI_MODEL, "MaoMao", maomaiResult.tokens);
     if (maomaiResult.timedOut || !maomaiResult.text) {
-      logAgent("MaoMao", "idle", "Timed out — proceeding without arch plan");
+      logAgent("MaoMao", "idle", "Timed out — proceeding without plan");
     } else {
       logAgent("MaoMao", "done", maomaiResult.text.slice(0,150));
-      notifyDiscord(`**[weirdbox-lab]** 🐱 **MaoMao plan** (iter ${iterNum}):\n> ${maomaiResult.text.slice(0,300).replace(/\n/g, "\n> ")}`);
+      if (iterNum % 2 === 0) notifyDiscord(`**${TAG}** 🐱 **MaoMao plan** (iter ${iterNum}):\n> ${maomaiResult.text.slice(0,300).replace(/\n/g, "\n> ")}`);
     }
 
     let issues = [];
@@ -885,7 +958,7 @@ Output a COMPLETE, visually stunning single-file HTML page. All CSS in <style>, 
     logAgent("Pipes", "coding", `Applying changes (${scope}) — ${(currentHtml.length/1024).toFixed(1)}KB page`);
     const applyResult = await codegenWithFallback({
       systemPrompt: CODEGEN_SOUL,
-      userPrompt: `Apply these changes to the WEIRDBOX Lab page.
+      userPrompt: `Apply these changes to the ${siteName} page.
 
 CHANGES:
 ${changes}
@@ -929,7 +1002,7 @@ ${currentHtml.length > 20000
 
     // 3d. Extra Llama pass when time allows + every 3rd iter
     if (iterNum % 3 === 0 && timeLeft() > budgetMs * 0.3) {
-      console.log("[weirdbox-lab] Llama improvement pass");
+      console.log(`${TAG} Llama improvement pass`);
       const llamaResult = await callLLM({
         model: LLAMA_MODEL, systemPrompt: CODEGEN_SOUL,
         userPrompt: `Polish this WEIRDBOX Lab page. Improve typography, spacing, animations, and micro-interactions. Preserve all functionality. ${currentHtml.length > 20000 ? "Use SEARCH/REPLACE blocks for changes." : "Output the complete updated HTML."}\n\nCurrent HTML:\n${codegenHtml}`,
@@ -957,13 +1030,13 @@ ${currentHtml.length > 20000
 
     // Guardrails
     if (consecutiveFailures >= 3) {
-      console.warn("[weirdbox-lab] 3 failures in a row — stopping early");
-      notifyDiscord(`**[weirdbox-lab]** ⚠️ 3 consecutive failures — stopping early at iter ${iterNum}`);
+      console.warn(`${TAG} 3 failures in a row — stopping early`);
+      notifyDiscord(`**${TAG}** ⚠️ 3 consecutive failures — stopping early at iter ${iterNum}`);
       break;
     }
     if (totalTokens > 400000) {
-      console.warn("[weirdbox-lab] Token budget hit — stopping");
-      notifyDiscord(`**[weirdbox-lab]** ⚠️ Token budget hit (${totalTokens.toLocaleString()} tokens) — stopping`);
+      console.warn(`${TAG} Token budget hit — stopping`);
+      notifyDiscord(`**${TAG}** ⚠️ Token budget hit (${totalTokens.toLocaleString()} tokens) — stopping`);
       break;
     }
 
@@ -971,7 +1044,7 @@ ${currentHtml.length > 20000
 
     // Per-iteration status every 2 iterations
     if (iterNum % 2 === 0) {
-      notifyDiscord(`**[weirdbox-lab]** ⚡ **Iter ${iterNum}** | scope: ${scope} | ${timeLeftStr()} left | ${(currentHtml.length/1024).toFixed(1)}KB | $${totalCost.toFixed(4)}`);
+      notifyDiscord(`**${TAG}** ⚡ **Iter ${iterNum}** | scope: ${scope} | ${timeLeftStr()} left | ${(currentHtml.length/1024).toFixed(1)}KB | $${totalCost.toFixed(4)}`);
     }
   }
 
@@ -980,29 +1053,29 @@ ${currentHtml.length > 20000
   Object.keys(liveState.agents).forEach(a => { liveState.agents[a].status = "idle"; });
   logAgent("System", "complete", `Build cycle done.`);
   const duration = ((Date.now() - startTime) / 60000).toFixed(1);
-  console.log(`[weirdbox-lab] === DONE === ${duration}min | ${iterNum} iters | ${(currentHtml.length/1024).toFixed(1)}KB | ${totalTokens} tokens | $${totalCost.toFixed(4)}`);
+  console.log(`${TAG} === DONE === ${duration}min | ${iterNum} iters | ${(currentHtml.length/1024).toFixed(1)}KB | ${totalTokens} tokens | $${totalCost.toFixed(4)}`);
 
   reportGenEvent({
     type: GenType.WORKSHOP_BUILD, status: GenStatus.SUCCESS,
     durationMs: Date.now() - startTime, totalTokens,
-    context: { target: "weirdbox-lab", iterations: iterNum, htmlSize: currentHtml.length, costUsd: totalCost },
+    context: { target: BUILD_TARGET, iterations: iterNum, htmlSize: currentHtml.length, costUsd: totalCost },
   });
 
-  // Save state
   try {
     fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
-    fs.writeFileSync(STATE_FILE, JSON.stringify({ lastRun: new Date().toISOString(), iterations: iterNum, htmlSize: currentHtml.length, totalTokens, totalCost, duration }, null, 2));
-  } catch (e) { console.warn(`[weirdbox-lab] State save failed: ${e.message}`); }
+    fs.writeFileSync(STATE_FILE, JSON.stringify({ lastRun: new Date().toISOString(), target: BUILD_TARGET, iterations: iterNum, htmlSize: currentHtml.length, totalTokens, totalCost, duration }, null, 2));
+  } catch (e) { console.warn(`${TAG} State save failed: ${e.message}`); }
 
+  const nextTarget = BUILD_TARGET === "weirdbox-lab" ? "mindpipes" : "weirdbox-lab";
   notifyDiscord([
-    `**[weirdbox-lab]** ✅ **Cycle complete**`,
+    `**${TAG}** ✅ **Cycle complete** — next up: ${nextTarget}`,
     `⏱ ${duration} min | 🔁 ${iterNum} iterations | 📄 ${(currentHtml.length/1024).toFixed(1)}KB | 💰 $${totalCost.toFixed(4)} | 🔢 ${totalTokens.toLocaleString()} tokens`,
-    `👁 Candy | 🔍 Pipes | 🐱 MaoMao (qwen3.6) | 🦙 Llama — all on gemini-3.1-flash-lite-preview / OpenRouter`,
+    `👁 Candy | 🔍 Pipes | 🐱 MaoMao (qwen3.6) | 🦙 Llama`,
   ].join("\n"));
 }
 
 build().catch(e => {
-  console.error(`[weirdbox-lab] Fatal: ${e.message}`);
-  notifyDiscord(`**[weirdbox-lab]** ❌ **Fatal error:** ${e.message.slice(0,200)}`);
+  console.error(`${TAG} Fatal: ${e.message}`);
+  notifyDiscord(`**${TAG}** ❌ **Fatal error:** ${e.message.slice(0,200)}`);
   process.exit(1);
 });
