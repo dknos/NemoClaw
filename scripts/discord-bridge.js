@@ -5487,8 +5487,20 @@ client.on("interactionCreate", async (interaction) => {
             generationContext.set(interaction.id, { type: "capcut", draftUrl: result.draftUrl, prompt: caption || `${preset} ${style} capcut` });
           }
         } else {
-          cleanupCompose(result);
-          await interaction.editReply(`🎬 **CapCut Draft Created** — ${info}\n📋 Draft: \`${result.draftId}\`\nOpen CapCut Desktop to preview and export.`);
+          // draft mode: copy assets to Desktop + rewrite paths so CapCut can find the media
+          try {
+            const { copyDraftToDesktop, rewriteMediaPaths } = require("./lib/capcut-desktop-export");
+            const ts = new Date().toISOString().slice(0, 16).replace("T", "_").replace(/:/g, "-");
+            const draftName = `${effectiveStyle}-${preset}-${ts}`;
+            const { desktopPath, friendlyName } = await copyDraftToDesktop(result.draftUrl, { draftName });
+            rewriteMediaPaths(desktopPath, result.fileServer?.url || null, result.tmpDir);
+            cleanupCompose(result);
+            await interaction.editReply(`🎬 **CapCut Draft Ready** — ${info}\n📁 Project: \`${friendlyName}\`\nOpen CapCut Desktop → find the project → export when ready.`);
+          } catch (copyErr) {
+            console.warn("[capcut] draft Desktop copy failed:", copyErr.message);
+            cleanupCompose(result);
+            await interaction.editReply(`🎬 **CapCut Draft Created** — ${info}\n📋 Draft: \`${result.draftId}\`\n⚠️ Could not copy to Desktop (${copyErr.message.slice(0, 100)})`);
+          }
           generationContext.set(interaction.id, { type: "capcut", draftUrl: result.draftUrl, prompt: caption || `${preset} ${style} capcut` });
         }
       } catch (e) {
