@@ -21,6 +21,7 @@ const https  = require("https");
 const fs     = require("fs");
 const path   = require("path");
 const os     = require("os");
+const { OpenRouter } = require("@openrouter/sdk");
 const { reportGenEvent, GenStatus, GenType, estimateCost } = require("./lib/gen-monitor");
 
 // ── Env ──────────────────────────────────────────────────────────────
@@ -35,6 +36,39 @@ if (fs.existsSync(envFile)) {
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
 const DISCORD_BOT_TOKEN  = process.env.DISCORD_BOT_TOKEN  || "";
 const DISCORD_CHANNEL    = process.env.DISCORD_ERRORS_CHANNEL || ""; // set in .nemoclaw_env
+
+// ── OpenRouter SDK client (for MaoMao/Qwen streaming) ───────────────
+const orClient = new OpenRouter({ apiKey: OPENROUTER_API_KEY });
+
+async function callOpenRouterSDK({ model, systemPrompt, userPrompt, maxTokens = 4000, temperature = 0.4 }) {
+  const t0 = Date.now();
+  try {
+    const stream = await orClient.chat.send({
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user",   content: userPrompt },
+      ],
+      max_tokens: maxTokens,
+      temperature,
+      stream: true,
+    });
+    let text = "", reasoningTokens = 0, totalTok = 0;
+    for await (const chunk of stream) {
+      const content = chunk.choices?.[0]?.delta?.content;
+      if (content) text += content;
+      if (chunk.usage) {
+        totalTok = chunk.usage.totalTokens || chunk.usage.total_tokens || 0;
+        reasoningTokens = chunk.usage.reasoningTokens || 0;
+      }
+    }
+    if (reasoningTokens > 0) console.log(`[weirdbox-lab] MaoMao reasoning tokens: ${reasoningTokens}`);
+    return { text: text.trim(), tokens: totalTok || Math.ceil(text.length / 4), durationMs: Date.now() - t0, statusCode: 200 };
+  } catch (e) {
+    console.warn(`[weirdbox-lab] OpenRouter SDK error: ${e.message}`);
+    return { text: "", tokens: 0, durationMs: Date.now() - t0, statusCode: 0 };
+  }
+}
 
 // ── Vertex AI token ─────────────────────────────────────────────────
 let _vtx = null, _vtxExp = 0;
@@ -373,6 +407,11 @@ async function takeScreenshot() {
 // ── LLM call ─────────────────────────────────────────────────────────
 async function _callOnce({ model, systemPrompt, userPrompt, maxTokens = 4000, temperature = 0.5, imageBase64 = null }) {
   const provider = getProvider(model);
+
+  // MaoMao (Qwen via OpenRouter) uses the official SDK for streaming + reasoning tokens
+  if (provider === "openrouter") {
+    return callOpenRouterSDK({ model, systemPrompt, userPrompt, maxTokens, temperature });
+  }
 
   // ── Vertex Gemini ──
   if (provider === "vertex-gemini") {
