@@ -43,7 +43,7 @@ const orClient = new OpenRouter({ apiKey: OPENROUTER_API_KEY });
 async function callOpenRouterSDK({ model, systemPrompt, userPrompt, maxTokens = 4000, temperature = 0.4 }) {
   const t0 = Date.now();
   try {
-    const stream = await orClient.chat.send({
+    const stream = await orClient.chat.completions.create({
       model,
       messages: [
         { role: "system", content: systemPrompt },
@@ -95,10 +95,10 @@ async function getVertexToken() {
 // Pipes  = team lead + visual critic + codegen fallback
 // MaoMao = primary codegen (Qwen 3.6 via OpenRouter)
 // Llama  = extra improvement pass
-const CANDY_MODEL  = "gemini-3.1-flash";                              // Vertex Gemini — vision + direction
-const PIPES_MODEL  = "gemini-3.1-flash";                              // Vertex Gemini — reviewer + codegen fallback
-const MAOMAI_MODEL = "qwen/qwen3.6-plus:free";                         // OpenRouter — architect (async, don't block)
-const FLASH_MODEL  = "gemini-2.0-flash";                              // Vertex Gemini — fast codegen (5th agent)
+const CANDY_MODEL  = "gemini-3.1-flash-lite-preview";                 // Vertex Gemini — vision + direction
+const PIPES_MODEL  = "gemini-3.1-flash-lite-preview";                 // Vertex Gemini — reviewer + codegen fallback
+const MAOMAI_MODEL = "qwen/qwen3.6-plus:free";                        // OpenRouter — architect (async, don't block)
+const FLASH_MODEL  = "gemini-3.1-flash-lite-preview";                 // Vertex Gemini — fast codegen (5th agent)
 const LLAMA_MODEL  = "meta/llama-4-maverick-17b-128e-instruct-maas"; // Vertex MaaS — polish pass
 
 const MAOMAI_TIMEOUT_MS = 50000; // max wait for Qwen — if it's not done, proceed without it
@@ -944,7 +944,7 @@ ${currentHtml.length > 20000
       const llamaResult = await callLLM({
         model: LLAMA_MODEL, systemPrompt: CODEGEN_SOUL,
         userPrompt: `Polish this WEIRDBOX Lab page. Improve typography, spacing, animations, and micro-interactions. Preserve all functionality. ${currentHtml.length > 20000 ? "Use SEARCH/REPLACE blocks for changes." : "Output the complete updated HTML."}\n\nCurrent HTML:\n${codegenHtml}`,
-        maxTokens: 16384, temperature: 0.3, _agent: "Llama",
+        maxTokens: 8192, temperature: 0.3, _agent: "Llama",  // MaaS cap: 8192
       });
       trackTokens(LLAMA_MODEL, "Llama", llamaResult.tokens);
       liveState.agents.Llama.status = "polishing";
