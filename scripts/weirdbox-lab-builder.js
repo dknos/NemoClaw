@@ -83,6 +83,145 @@ const TARGET_FILE  = path.join(os.homedir(), "netify-dev", "public", "weirdbox-l
 const BRIEFS_DIR   = path.join(__dirname, "workshop-briefs");
 const BRIEF_FILE   = path.join(BRIEFS_DIR, "weirdbox.md");
 const STATE_FILE   = path.join(os.homedir(), "netify-dev", "public", "data", "weirdbox-lab-state.json");
+const LIVE_FILE    = path.join(os.homedir(), "netify-dev", "public", "data", "weirdbox-lab-live.json");
+fs.mkdirSync(path.dirname(LIVE_FILE), { recursive: true });
+
+// ── Live telemetry state ─────────────────────────────────────────────
+const liveState = {
+  status: "starting",
+  startTime: Date.now(),
+  lastUpdate: Date.now(),
+  iteration: 0,
+  totalTokens: 0,
+  totalCost: 0,
+  pageSize: 0,
+  agents: {
+    Candy:  { status: "idle", lastMessage: "" },
+    Pipes:  { status: "idle", lastMessage: "" },
+    MaoMao: { status: "idle", lastMessage: "" },
+    Flash:  { status: "idle", lastMessage: "" },
+    Llama:  { status: "idle", lastMessage: "" },
+  },
+  logs: [],
+};
+
+// writeLiveState is called before totalTokens/currentHtml are declared at module scope,
+// so we use typeof guards. They'll be set by the time build() runs.
+function writeLiveState() {
+  liveState.lastUpdate  = Date.now();
+
+  liveState.totalTokens = typeof totalTokens !== "undefined" ? totalTokens : 0;
+
+  liveState.totalCost   = typeof totalCost   !== "undefined" ? totalCost   : 0;
+
+  liveState.pageSize    = typeof currentHtml !== "undefined" && currentHtml ? currentHtml.length : 0;
+  try { fs.writeFileSync(LIVE_FILE, JSON.stringify(liveState, null, 2)); } catch (_e) { /* ignore */ }
+}
+
+function logAgent(agent, phase, message) {
+  const entry = { t: Date.now(), agent, phase, msg: message.slice(0, 200) };
+  liveState.logs.push(entry);
+  if (liveState.logs.length > 120) liveState.logs = liveState.logs.slice(-100); // keep last 100
+  if (liveState.agents[agent]) liveState.agents[agent] = { status: phase, lastMessage: message.slice(0, 120) };
+  console.log(`[weirdbox-lab] [${agent}:${phase}] ${message.slice(0,80)}`);
+  writeLiveState();
+}
+
+// ── Monitor panel — always injected into weirdbox-lab.html ───────────
+// Strip marker so we re-inject fresh on every write
+const MONITOR_MARKER_START = "<!-- __WEIRDBOX_MONITOR_START__ -->";
+const MONITOR_MARKER_END   = "<!-- __WEIRDBOX_MONITOR_END__ -->";
+
+const MONITOR_PANEL = `${MONITOR_MARKER_START}
+<style>
+#wbl-monitor{position:fixed;bottom:16px;right:16px;z-index:99999;font-family:'Courier New',monospace;font-size:11px;color:#00f5d4;background:rgba(0,0,0,.92);border:1px solid #00f5d4;border-radius:8px;width:340px;max-height:520px;display:flex;flex-direction:column;box-shadow:0 0 18px rgba(0,245,212,.25);transition:all .2s}
+#wbl-monitor.collapsed{max-height:36px;overflow:hidden}
+#wbl-header{display:flex;align-items:center;justify-content:space-between;padding:6px 10px;cursor:pointer;border-bottom:1px solid #00f5d424;user-select:none}
+#wbl-header span{font-weight:bold;letter-spacing:.5px}
+#wbl-toggle{background:none;border:none;color:#00f5d4;cursor:pointer;font-size:14px;padding:0}
+#wbl-stats{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:8px 10px;border-bottom:1px solid #00f5d424}
+.wbl-stat{display:flex;flex-direction:column}.wbl-stat .lbl{color:#ffffff55;font-size:9px;text-transform:uppercase;letter-spacing:.5px}.wbl-stat .val{color:#00f5d4;font-weight:bold}
+#wbl-agents{padding:6px 10px;border-bottom:1px solid #00f5d424;display:flex;flex-wrap:wrap;gap:4px}
+.wbl-agent{padding:2px 6px;border-radius:3px;font-size:10px;font-weight:bold;border:1px solid transparent}
+.wbl-agent.idle{color:#ffffff44;border-color:#ffffff22}
+.wbl-agent.vision,.wbl-agent.starting,.wbl-agent.reviewing,.wbl-agent.planning,.wbl-agent.coding,.wbl-agent.thinking,.wbl-agent.polishing{color:#000;background:#00f5d4;border-color:#00f5d4;animation:wbl-pulse 1s infinite}
+.wbl-agent.done{color:#00f5d4;border-color:#00f5d4}
+.wbl-agent.error{color:#ff6b9d;border-color:#ff6b9d}
+@keyframes wbl-pulse{0%,100%{opacity:1}50%{opacity:.6}}
+#wbl-logs{flex:1;overflow-y:auto;padding:6px 10px;max-height:220px}
+.wbl-log{padding:2px 0;border-bottom:1px solid #ffffff08;line-height:1.4}
+.wbl-log .wbl-time{color:#ffffff44;margin-right:4px}
+.wbl-log .wbl-tag{margin-right:4px;font-weight:bold}
+.wbl-log .wbl-tag.Candy{color:#ff6b9d}
+.wbl-log .wbl-tag.Pipes{color:#00f5d4}
+.wbl-log .wbl-tag.MaoMao{color:#ffd166}
+.wbl-log .wbl-tag.Flash{color:#06d6a0}
+.wbl-log .wbl-tag.Llama{color:#a78bfa}
+.wbl-log .wbl-tag.System{color:#ffffff88}
+#wbl-status{padding:4px 10px;font-size:10px;color:#ffffff55;border-top:1px solid #00f5d424;text-align:right}
+</style>
+<div id="wbl-monitor">
+  <div id="wbl-header" onclick="document.getElementById('wbl-monitor').classList.toggle('collapsed')">
+    <span>⚡ WEIRDBOX LAB MONITOR</span>
+    <button id="wbl-toggle">▲</button>
+  </div>
+  <div id="wbl-stats">
+    <div class="wbl-stat"><span class="lbl">Status</span><span class="val" id="wbl-s-status">—</span></div>
+    <div class="wbl-stat"><span class="lbl">Iteration</span><span class="val" id="wbl-s-iter">—</span></div>
+    <div class="wbl-stat"><span class="lbl">Time running</span><span class="val" id="wbl-s-time">—</span></div>
+    <div class="wbl-stat"><span class="lbl">Page size</span><span class="val" id="wbl-s-size">—</span></div>
+    <div class="wbl-stat"><span class="lbl">Tokens</span><span class="val" id="wbl-s-tokens">—</span></div>
+    <div class="wbl-stat"><span class="lbl">Cost</span><span class="val" id="wbl-s-cost">—</span></div>
+  </div>
+  <div id="wbl-agents"></div>
+  <div id="wbl-logs"></div>
+  <div id="wbl-status">polling...</div>
+</div>
+<script>
+(function(){
+  const COLORS={Candy:'#ff6b9d',Pipes:'#00f5d4',MaoMao:'#ffd166',Flash:'#06d6a0',Llama:'#a78bfa',System:'#ffffff88'};
+  let lastLogCount=0,collapsed=localStorage.getItem('wbl-collapsed')==='1';
+  if(collapsed)document.getElementById('wbl-monitor').classList.add('collapsed');
+  document.getElementById('wbl-header').addEventListener('click',()=>{
+    const c=document.getElementById('wbl-monitor').classList.toggle('collapsed');
+    localStorage.setItem('wbl-collapsed',c?'1':'0');
+  });
+  function fmt(ms){const s=Math.floor(ms/1000),m=Math.floor(s/60);return m>0?m+'m '+(s%60)+'s':s+'s';}
+  function fmtNum(n){return n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(1)+'K':String(n);}
+  async function poll(){
+    try{
+      const r=await fetch('/data/weirdbox-lab-live.json?_='+Date.now());
+      if(!r.ok)return;
+      const d=await r.json();
+      document.getElementById('wbl-s-status').textContent=d.status||'—';
+      document.getElementById('wbl-s-iter').textContent=d.iteration||'0';
+      document.getElementById('wbl-s-time').textContent=d.startTime?fmt(Date.now()-d.startTime):'—';
+      document.getElementById('wbl-s-size').textContent=d.pageSize?((d.pageSize/1024).toFixed(1)+'KB'):'—';
+      document.getElementById('wbl-s-tokens').textContent=fmtNum(d.totalTokens||0);
+      document.getElementById('wbl-s-cost').textContent='$'+(d.totalCost||0).toFixed(4);
+      const ag=document.getElementById('wbl-agents');
+      ag.innerHTML=Object.entries(d.agents||{}).map(([n,a])=>
+        '<div class="wbl-agent '+a.status+'" title="'+a.lastMessage+'">'+n+'</div>'
+      ).join('');
+      const newLogs=(d.logs||[]).slice(lastLogCount);
+      if(newLogs.length){
+        const el=document.getElementById('wbl-logs');
+        newLogs.forEach(e=>{
+          const div=document.createElement('div');div.className='wbl-log';
+          const t=new Date(e.t).toLocaleTimeString('en',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+          div.innerHTML='<span class="wbl-time">'+t+'</span><span class="wbl-tag '+(e.agent||'System')+'">['+(e.agent||'SYS')+']</span>'+e.msg;
+          el.appendChild(div);
+        });
+        el.scrollTop=el.scrollHeight;
+        lastLogCount=d.logs.length;
+      }
+      document.getElementById('wbl-status').textContent='updated '+new Date(d.lastUpdate).toLocaleTimeString();
+    }catch(e){document.getElementById('wbl-status').textContent='offline';}
+  }
+  poll();setInterval(poll,3000);
+})();
+</script>
+${MONITOR_MARKER_END}`;
 
 // Guard: refuse to touch production file (should never reach here, but just in case)
 if (process.argv.includes("weirdbox-game.html") || process.argv.includes("weirdbox.html")) {
@@ -337,13 +476,18 @@ Rules: apply requested changes precisely. Preserve everything else. Use modern C
 // ── Write output ─────────────────────────────────────────────────────
 function writeLabFile(html) {
   if (!isValidHtml(html)) { console.warn("[weirdbox-lab] Refusing to write invalid HTML"); return false; }
-  // Safety check — triple confirm we're not overwriting production
   if (!TARGET_FILE.includes("weirdbox-lab")) {
     console.error("[weirdbox-lab] SAFETY: target path doesn't contain 'weirdbox-lab' — refusing write");
     return false;
   }
-  fs.writeFileSync(TARGET_FILE, html, "utf8");
-  console.log(`[weirdbox-lab] Wrote ${(html.length/1024).toFixed(1)}KB to weirdbox-lab.html`);
+  // Strip any previous monitor panel, then re-inject fresh before </body>
+  const stripped = html.replace(new RegExp(MONITOR_MARKER_START + "[\\s\\S]*?" + MONITOR_MARKER_END, "g"), "").trim();
+  const injected = stripped.includes("</body>")
+    ? stripped.replace("</body>", MONITOR_PANEL + "\n</body>")
+    : stripped + "\n" + MONITOR_PANEL;
+  fs.writeFileSync(TARGET_FILE, injected, "utf8");
+  console.log(`[weirdbox-lab] Wrote ${(injected.length/1024).toFixed(1)}KB to weirdbox-lab.html`);
+  writeLiveState();
   return true;
 }
 
@@ -366,7 +510,10 @@ async function build() {
   let consecutiveFailures = 0;
   let iterNum = 0;
 
+  liveState.status = "starting";
+  writeLiveState();
   notifyDiscord(`**[weirdbox-lab]** 🚀 **Starting** — ${(budgetMs/60000).toFixed(0)}-min cycle | page: ${(currentHtml.length/1024).toFixed(1)}KB | triggered by: ${triggeredBy}`);
+  logAgent("System", "starting", `Build cycle started. Budget: ${(budgetMs/60000).toFixed(0)}min. Page: ${(currentHtml.length/1024).toFixed(1)}KB`);
 
   // Phase 1: Candy vision — screenshot + direction
   console.log("[weirdbox-lab] Phase 1: Candy vision (screenshot)");
@@ -381,6 +528,11 @@ async function build() {
     ? `You're looking at the current state of WEIRDBOX Lab. Here's the screenshot of the page.\n\nCurrent HTML size: ${(currentHtml.length/1024).toFixed(1)}KB\nTime budget: ${(budgetMs/60000).toFixed(0)} minutes\n\n${brief ? `BRIEF:\n${brief.slice(0,3000)}\n\n` : ""}What are the top 3 most impactful improvements to make? Be specific — name colors, animations, layout changes. Focus on visual impact.`
     : `Review this WEIRDBOX Lab page and give 3 specific improvement directions.\n\nHTML summary: ${summarizeHtml(currentHtml)}\nBudget: ${(budgetMs/60000).toFixed(0)} min\n\n${brief ? `BRIEF:\n${brief.slice(0,3000)}\n\n` : ""}What needs to change? Name exact CSS properties, animations, colors.`;
 
+  liveState.status = "building";
+  liveState.agents.Candy.status = "vision";
+  writeLiveState();
+  logAgent("Candy", "vision", `Reviewing page${screenshot ? " (with screenshot)" : " (HTML only)"}...`);
+
   const vision = await callLLM({
     model: CANDY_MODEL, systemPrompt: CANDY_SOUL,
     userPrompt: candyVisionPrompt,
@@ -389,10 +541,10 @@ async function build() {
   });
   trackTokens(CANDY_MODEL, "Candy", vision.tokens);
   if (vision.text) {
-    console.log(`[weirdbox-lab] Candy direction: ${vision.text.slice(0,120)}...`);
+    logAgent("Candy", "done", vision.text.slice(0, 180));
     notifyDiscord(`**[weirdbox-lab]** 🍬 **Candy's plan** (${screenshot ? "saw screenshot" : "HTML only"}):\n> ${vision.text.slice(0,400).replace(/\n/g, "\n> ")}`);
   } else {
-    console.warn("[weirdbox-lab] Candy returned nothing — continuing without direction");
+    logAgent("Candy", "error", "Returned nothing — proceeding without vision direction");
     notifyDiscord("**[weirdbox-lab]** ⚠️ Candy returned nothing — proceeding without vision");
   }
 
@@ -428,10 +580,14 @@ Output a COMPLETE, visually stunning single-file HTML page. All CSS in <style>, 
   while (timeLeft() > budgetMs * 0.08) {
     iterNum++;
     const scope = getScope();
-    console.log(`[weirdbox-lab] --- Iteration ${iterNum} (${scope}, ${timeLeftStr()} left) ---`);
+    liveState.iteration = iterNum;
+    liveState.status = "building";
+    logAgent("System", "iteration", `Iteration ${iterNum} — scope: ${scope}, ${timeLeftStr()} left`);
 
     // 3a. Fire MaoMao architect ASYNC — don't block, let him think while Pipes reviews
     const summary = summarizeHtml(currentHtml);
+    liveState.agents.MaoMao.status = "thinking";
+    writeLiveState();
     const maomaiPromise = Promise.race([
       callLLM({
         model: MAOMAI_MODEL, systemPrompt: MAOMAI_SOUL,
@@ -442,6 +598,9 @@ Output a COMPLETE, visually stunning single-file HTML page. All CSS in <style>, 
     ]);
 
     // 3b. Pipes review + Candy direction in parallel (while MaoMao thinks)
+    liveState.agents.Pipes.status = "reviewing";
+    if (iterNum % 2 === 0) liveState.agents.Candy.status = "planning";
+    writeLiveState();
     const reviewHtml = currentHtml.length > 6000
       ? currentHtml.slice(0, 3000) + "\n\n<!-- ...middle truncated... -->\n\n" + currentHtml.slice(-3000)
       : currentHtml;
@@ -463,6 +622,7 @@ Output a COMPLETE, visually stunning single-file HTML page. All CSS in <style>, 
 
     trackTokens(PIPES_MODEL, "Pipes", review.tokens);
     if (candyDir) trackTokens(CANDY_MODEL, "Candy", candyDir.tokens);
+    if (candyDir?.text) logAgent("Candy", "done", candyDir.text.slice(0,120));
 
     // 3c. Catch up with MaoMao — give 5 more seconds after Pipes, then move on
     const maomaiResult = await Promise.race([
@@ -471,9 +631,9 @@ Output a COMPLETE, visually stunning single-file HTML page. All CSS in <style>, 
     ]);
     if (maomaiResult.tokens) trackTokens(MAOMAI_MODEL, "MaoMao", maomaiResult.tokens);
     if (maomaiResult.timedOut || !maomaiResult.text) {
-      console.log("[weirdbox-lab] MaoMao still thinking — proceeding without architect plan");
+      logAgent("MaoMao", "idle", "Timed out — proceeding without arch plan");
     } else {
-      console.log(`[weirdbox-lab] MaoMao arch plan ready: ${maomaiResult.text.slice(0,80)}...`);
+      logAgent("MaoMao", "done", maomaiResult.text.slice(0,150));
       notifyDiscord(`**[weirdbox-lab]** 🐱 **MaoMao plan** (iter ${iterNum}):\n> ${maomaiResult.text.slice(0,300).replace(/\n/g, "\n> ")}`);
     }
 
@@ -482,6 +642,7 @@ Output a COMPLETE, visually stunning single-file HTML page. All CSS in <style>, 
       const m = review.text?.match(/\[[\s\S]*\]/);
       if (m) issues = JSON.parse(m[0]);
     } catch (_e) { if (review.text) issues = [{ description: review.text.slice(0,300), fix: "See description" }]; }
+    logAgent("Pipes", "done", issues.length ? `Found ${issues.length} issue(s): ${issues.map(i=>i.description).join("; ").slice(0,120)}` : "No critical issues");
 
     if (timeLeft() < budgetMs * 0.08) break;
 
@@ -513,6 +674,9 @@ Output a COMPLETE, visually stunning single-file HTML page. All CSS in <style>, 
     }
 
     // 3e. Flash codegen (Gemini 2.0 → Pipes fallback)
+    liveState.agents.Flash.status = "coding";
+    writeLiveState();
+    logAgent("Flash", "coding", `Applying changes (${scope}) — ${(currentHtml.length/1024).toFixed(1)}KB page`);
     const applyResult = await codegenWithFallback({
       systemPrompt: CODEGEN_SOUL,
       userPrompt: `Apply these changes to the WEIRDBOX Lab page.
@@ -538,7 +702,7 @@ ${currentHtml.length > 20000
       if (patched) {
         currentHtml = patched;
         writeLabFile(currentHtml);
-        console.log(`[weirdbox-lab] DIFF: patched. Size: ${(currentHtml.length/1024).toFixed(1)}KB`);
+        logAgent("Flash", "done", `DIFF applied. New size: ${(currentHtml.length/1024).toFixed(1)}KB`);
         updated = true;
         consecutiveFailures = 0;
       }
@@ -549,10 +713,10 @@ ${currentHtml.length > 20000
       if (isValidHtml(newHtml) && newHtml.length > currentHtml.length * 0.5) {
         currentHtml = newHtml;
         writeLabFile(currentHtml);
-        console.log(`[weirdbox-lab] FULL: updated. Size: ${(currentHtml.length/1024).toFixed(1)}KB`);
+        logAgent("Flash", "done", `Full rewrite. New size: ${(currentHtml.length/1024).toFixed(1)}KB`);
         consecutiveFailures = 0;
       } else {
-        console.warn(`[weirdbox-lab] Rejected — kept current ${(currentHtml.length/1024).toFixed(1)}KB`);
+        logAgent("Flash", "error", `Output rejected — keeping current ${(currentHtml.length/1024).toFixed(1)}KB`);
         consecutiveFailures++;
       }
     }
@@ -566,15 +730,21 @@ ${currentHtml.length > 20000
         maxTokens: 16384, temperature: 0.3, _agent: "Llama",
       });
       trackTokens(LLAMA_MODEL, "Llama", llamaResult.tokens);
+      liveState.agents.Llama.status = "polishing";
+      writeLiveState();
+      logAgent("Llama", "polishing", `Polish pass — ${(currentHtml.length/1024).toFixed(1)}KB`);
       if (currentHtml.length > 20000 && llamaResult.text?.includes("<<<SEARCH")) {
         const patched = applyDiff(currentHtml, llamaResult.text);
-        if (patched) { currentHtml = patched; writeLabFile(currentHtml); console.log("[weirdbox-lab] Llama patch applied"); }
+        if (patched) { currentHtml = patched; writeLabFile(currentHtml); logAgent("Llama", "done", `Patch applied. ${(currentHtml.length/1024).toFixed(1)}KB`); }
+        else { logAgent("Llama", "idle", "Patch failed — kept current"); }
       } else {
         const llamaHtml = extractHtml(llamaResult.text);
         if (isValidHtml(llamaHtml) && llamaHtml.length > currentHtml.length * 0.6) {
           currentHtml = llamaHtml;
           writeLabFile(currentHtml);
-          console.log("[weirdbox-lab] Llama full update applied");
+          logAgent("Llama", "done", `Full polish applied. ${(currentHtml.length/1024).toFixed(1)}KB`);
+        } else {
+          logAgent("Llama", "idle", "Output rejected — kept current");
         }
       }
     }
@@ -598,6 +768,9 @@ ${currentHtml.length > 20000
   }
 
   // ── Finalize ─────────────────────────────────────────────────────
+  liveState.status = "complete";
+  Object.keys(liveState.agents).forEach(a => { liveState.agents[a].status = "idle"; });
+  logAgent("System", "complete", `Build cycle done.`);
   const duration = ((Date.now() - startTime) / 60000).toFixed(1);
   console.log(`[weirdbox-lab] === DONE === ${duration}min | ${iterNum} iters | ${(currentHtml.length/1024).toFixed(1)}KB | ${totalTokens} tokens | $${totalCost.toFixed(4)}`);
 
