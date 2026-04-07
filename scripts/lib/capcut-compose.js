@@ -172,15 +172,18 @@ async function addVideoTracks(draft, vidUrls, timelines, mediaCount, styleCfg, w
   const vidTimelines = timelines.filter((_, i) => i % mediaCount < vidUrls.length);
   if (vidTimelines.length === 0) return draft;
 
+  // API maps url[i] → timelines[i] 1:1 — cycle URLs to fill all slots
+  const expandedUrls = vidTimelines.map((_, i) => vidUrls[i % vidUrls.length]);
+
   const infos = await cc.videoInfos({
-    videoUrls: vidUrls, timelines: vidTimelines,
+    videoUrls: expandedUrls, timelines: vidTimelines,
     transition: styleCfg.transition,
     transitionDuration: styleCfg.transition ? 200000 : null,
     width: w, height: h,
     volume: hasAudio ? 0 : 1.0,
   });
   const result = await cc.addVideos(draft, infos);
-  console.log(`[capcut-compose] added ${vidUrls.length} videos on ${vidTimelines.length} segments`);
+  console.log(`[capcut-compose] added ${vidUrls.length} videos on ${vidTimelines.length} segments (${expandedUrls.length} total slots filled)`);
   return result.draftUrl;
 }
 
