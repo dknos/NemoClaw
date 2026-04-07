@@ -123,7 +123,8 @@ console.log(`${TAG} === START ===`);
 const SITE_ROOT   = path.join(os.homedir(), "netify-dev", "public");
 const TARGET_FILE = path.join(SITE_ROOT, `${BUILD_TARGET}.html`);
 const LIVE_FILE   = path.join(SITE_ROOT, "data", `${BUILD_TARGET}-live.json`);
-const STATE_FILE  = path.join(SITE_ROOT, "data", `${BUILD_TARGET}-state.json`);
+const STATE_FILE       = path.join(SITE_ROOT, "data", `${BUILD_TARGET}-state.json`);
+const LIVE_SESSION_FILE = path.join(SITE_ROOT, "data", "live-session.json");
 const BRIEF_FILE  = path.join(BRIEFS_DIR, `${BUILD_TARGET}.md`);
 fs.mkdirSync(path.dirname(LIVE_FILE), { recursive: true });
 
@@ -157,6 +158,31 @@ function writeLiveState() {
 
   liveState.pageSize    = typeof currentHtml !== "undefined" && currentHtml ? currentHtml.length : 0;
   try { fs.writeFileSync(LIVE_FILE, JSON.stringify(liveState, null, 2)); } catch (_e) { /* ignore */ }
+}
+
+// Read live-session.json if a stream session is active
+function readLiveSession() {
+  try {
+    const raw = fs.readFileSync(LIVE_SESSION_FILE, "utf8");
+    const s   = JSON.parse(raw);
+    if (!s.active || s.paused) return null;
+    const inf = s.influence;
+    if (!inf || (!inf.mood && !inf.topic && !inf.shoutout)) return null;
+    return inf; // { mood, topic, shoutout, votes }
+  } catch (_e) {
+    return null; // no live session running — normal cron, no change
+  }
+}
+
+// Report session token usage back to live-session.json so live-session.js can track budget
+function reportSessionTokens(tokens) {
+  try {
+    const raw = fs.readFileSync(LIVE_SESSION_FILE, "utf8");
+    const s   = JSON.parse(raw);
+    if (!s.active) return;
+    s.sessionTokensUsed = (s.sessionTokensUsed || 0) + tokens;
+    fs.writeFileSync(LIVE_SESSION_FILE, JSON.stringify(s, null, 2));
+  } catch (_e) { /* no live session */ }
 }
 
 function logAgent(agent, phase, message) {
@@ -945,6 +971,18 @@ async function build() {
     ? `You're looking at the current state of WEIRDBOX Lab. Here's the screenshot of the page.\n\nCurrent HTML size: ${(currentHtml.length/1024).toFixed(1)}KB\nTime budget: ${(budgetMs/60000).toFixed(0)} minutes\n\n${brief ? `BRIEF:\n${brief.slice(0,3000)}\n\n` : ""}What are the top 3 most impactful improvements to make? Be specific — name colors, animations, layout changes. Focus on visual impact.`
     : `Review this WEIRDBOX Lab page and give 3 specific improvement directions.\n\nHTML summary: ${summarizeHtml(currentHtml)}\nBudget: ${(budgetMs/60000).toFixed(0)} min\n\n${brief ? `BRIEF:\n${brief.slice(0,3000)}\n\n` : ""}What needs to change? Name exact CSS properties, animations, colors.`;
 
+  // Check for live stream audience influence (safe enum signals only — never raw chat)
+  const liveInfluence = readLiveSession();
+  let finalCandyPrompt = candyVisionPrompt;
+  if (liveInfluence) {
+    const parts = [];
+    if (liveInfluence.mood)     parts.push(`mood: ${liveInfluence.mood}`);
+    if (liveInfluence.topic)    parts.push(`theme: ${liveInfluence.topic}`);
+    if (liveInfluence.shoutout) parts.push(`shoutout: ${liveInfluence.shoutout}`);
+    finalCandyPrompt += `\n\nLIVE AUDIENCE DIRECTION (${liveInfluence.votes || 0} votes): ${parts.join(" | ")}`;
+    console.log(`${TAG} Live influence active: ${parts.join(", ")}`);
+  }
+
   liveState.status = "building";
   liveState.agents.Candy.status = "vision";
   writeLiveState();
@@ -952,11 +990,12 @@ async function build() {
 
   const vision = await callLLM({
     model: CANDY_MODEL, systemPrompt: CANDY_SOUL,
-    userPrompt: candyVisionPrompt,
+    userPrompt: finalCandyPrompt,
     imageBase64: screenshot,
     maxTokens: 800, temperature: 0.85, _agent: "Candy",
   });
   trackTokens(CANDY_MODEL, "Candy", vision.tokens);
+  reportSessionTokens(vision.tokens);
   if (vision.text) {
     logAgent("Candy", "done", vision.text.slice(0, 180));
     notifyDiscord(`**${TAG}** 🍬 **Candy's plan** (${screenshot ? "saw screenshot" : "HTML only"}):\n> ${vision.text.slice(0,400).replace(/\n/g, "\n> ")}`);
