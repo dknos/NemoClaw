@@ -526,7 +526,7 @@ async function capcutCompose(opts) {
     const timelines = await buildTimelines(totalUs, mediaCount, analysis.beats, style, media.vidDurationsUs);
     console.log(`[capcut-compose] ${timelines.length} timeline segments, ${(totalUs / 1_000_000).toFixed(1)}s total`);
 
-    const ctx = { ...media, timelines, mediaCount, styleCfg, w, h, totalUs, beattrack, ...analysis, caption, lyrics, lyricsStyle };
+    const ctx = { ...media, timelines, mediaCount, styleCfg, w, h, totalUs, tmpDir, beattrack, ...analysis, caption, lyrics, lyricsStyle };
     let draft = await assembleDraft(draftUrl, ctx);
     draft = await applyEffects(draft, ctx);
     draft = await applyCaptions(draft, ctx);
