@@ -9,7 +9,7 @@
  *   Candy   (llama-4-maverick, vision) — screenshots the page, sets creative direction
  *   Pipes   (gemini-3.1-flash)         — team lead, reviewer, codegen fallback
  *   MaoMao  (qwen/qwen3-6b)            — primary codegen; falls back to Pipes on timeout
- *   Llama   (llama-4-maverick)         — extra improvement pass when time allows
+ *   Llama   (llama-4-maverick OpenRouter) — extra improvement pass when time allows
  *
  * RULES:
  *   - ONLY writes to public/weirdbox-lab.html
@@ -99,7 +99,7 @@ const CANDY_MODEL  = "gemini-3.1-flash-lite-preview";                 // Vertex 
 const PIPES_MODEL  = "gemini-3.1-flash-lite-preview";                 // Vertex Gemini — reviewer + codegen fallback
 const MAOMAI_MODEL = "qwen/qwen3.6-plus:free";                        // OpenRouter — architect (async, don't block)
 const FLASH_MODEL  = "gemini-3.1-flash-lite-preview";                 // Vertex Gemini — fast codegen (5th agent)
-const LLAMA_MODEL  = "meta/llama-4-maverick-17b-128e-instruct-maas"; // Vertex MaaS — polish pass
+const LLAMA_MODEL  = "meta-llama/llama-4-maverick";                   // OpenRouter — polish pass (no MaaS token cap)
 
 const MAOMAI_TIMEOUT_MS = 50000; // max wait for Qwen — if it's not done, proceed without it
 
@@ -944,7 +944,7 @@ ${currentHtml.length > 20000
       const llamaResult = await callLLM({
         model: LLAMA_MODEL, systemPrompt: CODEGEN_SOUL,
         userPrompt: `Polish this WEIRDBOX Lab page. Improve typography, spacing, animations, and micro-interactions. Preserve all functionality. ${currentHtml.length > 20000 ? "Use SEARCH/REPLACE blocks for changes." : "Output the complete updated HTML."}\n\nCurrent HTML:\n${codegenHtml}`,
-        maxTokens: 8192, temperature: 0.3, _agent: "Llama",  // MaaS cap: 8192
+        maxTokens: 16384, temperature: 0.3, _agent: "Llama",
       });
       trackTokens(LLAMA_MODEL, "Llama", llamaResult.tokens);
       liveState.agents.Llama.status = "polishing";
