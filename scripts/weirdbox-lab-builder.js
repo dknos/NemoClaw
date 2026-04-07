@@ -97,7 +97,7 @@ async function getVertexToken() {
 // Llama  = extra improvement pass
 const CANDY_MODEL  = "gemini-3.1-flash";                              // Vertex Gemini — vision + direction
 const PIPES_MODEL  = "gemini-3.1-flash";                              // Vertex Gemini — reviewer + codegen fallback
-const MAOMAI_MODEL = "qwen/qwen3-30b-a3b";                            // OpenRouter — architect (async, don't block)
+const MAOMAI_MODEL = "qwen/qwen3.6-plus:free";                         // OpenRouter — architect (async, don't block)
 const FLASH_MODEL  = "gemini-2.0-flash";                              // Vertex Gemini — fast codegen (5th agent)
 const LLAMA_MODEL  = "meta/llama-4-maverick-17b-128e-instruct-maas"; // Vertex MaaS — polish pass
 
