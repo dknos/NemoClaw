@@ -272,8 +272,16 @@ const commands = [
         { name: "Vintage", value: "vintage" },
         { name: "Dark", value: "dark" },
         { name: "Dreamy", value: "dreamy" },
-        { name: "Brainslop (beat-synced)", value: "brainslop" },
-        { name: "Ludicrous (chaos)", value: "ludicrous" },
+        { name: "Brainslop — CCD Flash, RGB Outline, Shake", value: "brainslop" },
+        { name: "Ludicrous — X-Signal, Shake, CCD Flash, Freeze", value: "ludicrous" },
+        { name: "Glitchpunk — RGB, Glitch, Chromatic, Scanline, Pixel", value: "glitchpunk" },
+        { name: "Neon Dream — Neon Glow, Halo, Sparkle, Fairy Dust", value: "neondream" },
+        { name: "Weather Witch — Rain, Fog, Leaves, Meteors, Snow", value: "weatherwitch" },
+        { name: "Retro Future — DV Cam, VCR, Film Burn, 90s Quality", value: "retrofuture" },
+        { name: "Motion Sick — Dash, Motion Blur, Spin Zoom, Shake", value: "motionsick" },
+        { name: "Animecore — Manga, Color Pop, Speed Lines, Starlight", value: "animecore" },
+        { name: "Golden Hour — Tyndall Light, Light Leaks, Film, Sun", value: "goldenhour" },
+        { name: "Split Reality — Triple Screen, Split Open, RGB, Glitch", value: "splitreality" },
       ))
     .addStringOption(o => o.setName("lyrics").setDescription("Auto-transcribed lyrics/captions")
       .addChoices(

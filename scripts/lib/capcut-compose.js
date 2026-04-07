@@ -142,16 +142,20 @@ async function buildTimelines(totalUs, mediaCount, beats, style, vidDurationsUs 
     });
   }
 
-  // Compute segment count from actual video durations to avoid black gaps.
-  // Use min duration so every clip fills its slot without overflow.
-  let numSegments = mediaCount * 2;
+  // Compute segment count targeting 20-30 cuts/min.
+  // High-energy styles: 2s segments (~30/min). Others: 3s (~20/min).
+  const HIGH_ENERGY = ["brainslop", "ludicrous", "glitchpunk", "motionsick", "splitreality", "16bit-spiritual"];
+  const targetSegDurSec = HIGH_ENERGY.includes(style) ? 2 : 3;
+  const byTarget = Math.ceil((totalUs / 1_000_000) / targetSegDurSec);
+  let numSegments = Math.max(mediaCount, byTarget);
   if (vidDurationsUs.length > 0) {
     const validDurs = vidDurationsUs.filter(d => d > 0);
     if (validDurs.length > 0) {
       const minDurUs = Math.min(...validDurs);
-      const byDuration = Math.ceil(totalUs / minDurUs);
-      numSegments = Math.max(mediaCount * 2, byDuration);
-      console.log(`[capcut-compose] segment count: ${numSegments} (min clip ${(minDurUs/1e6).toFixed(1)}s, total ${(totalUs/1e6).toFixed(1)}s)`);
+      // Never request more segments than source clips can fill (each seg needs ≥0.5s of unique content)
+      const maxByContent = Math.floor((minDurUs / 1_000_000) / 0.5) * validDurs.length;
+      numSegments = Math.min(numSegments, Math.max(mediaCount, maxByContent));
+      console.log(`[capcut-compose] segment count: ${numSegments} (${targetSegDurSec}s target, min clip ${(minDurUs/1e6).toFixed(1)}s, total ${(totalUs/1e6).toFixed(1)}s)`);
     }
   }
 
