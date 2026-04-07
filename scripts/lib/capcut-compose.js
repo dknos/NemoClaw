@@ -168,12 +168,57 @@ async function buildTimelines(totalUs, mediaCount, beats, style, vidDurationsUs 
 
 // ── Draft track adders ──────────────────────────────────────────────────────
 
-async function addVideoTracks(draft, vidUrls, timelines, mediaCount, styleCfg, w, h, hasAudio = false) {
+// Pre-trim source clips to slot duration so CapCut makes clean cuts.
+// CapCut plays each clip in full regardless of the timeline slot endpoint,
+// so we must trim before passing to the API.
+async function trimClipsToSegDur(vidUrls, vidTimelines, tmpDir) {
+  const { findFfmpeg } = require("./ffmpeg-utils");
+  const { execSync } = require("child_process");
+  const ffmpeg = findFfmpeg();
+  if (!ffmpeg || vidTimelines.length === 0) return vidUrls;
+
+  const segDurSec = (vidTimelines[0].end - vidTimelines[0].start) / 1_000_000;
+  const baseUrl = vidUrls[0].substring(0, vidUrls[0].lastIndexOf("/"));
+
+  const result = [];
+  for (const url of vidUrls) {
+    const filename = url.split("/").pop();
+    const srcPath = path.join(tmpDir, filename);
+    const srcDurSec = (getVideoDurationsUs([srcPath])[0] || 0) / 1_000_000;
+
+    if (srcDurSec <= segDurSec) {
+      result.push(url);
+      continue;
+    }
+
+    const trimName = filename.replace(/\.mp4$/i, "_seg.mp4");
+    const trimPath = path.join(tmpDir, trimName);
+    try {
+      execSync(
+        `"${ffmpeg}" -y -ss 0 -t ${segDurSec.toFixed(3)} -i "${srcPath}" -c copy -avoid_negative_ts 1 "${trimPath}"`,
+        { timeout: 30000, stdio: "pipe" }
+      );
+      result.push(`${baseUrl}/${trimName}`);
+      console.log(`[capcut-compose] trimmed ${filename}: ${srcDurSec.toFixed(1)}s → ${segDurSec.toFixed(1)}s`);
+    } catch (e) {
+      console.warn(`[capcut-compose] trim failed for ${filename}:`, e.message);
+      result.push(url);
+    }
+  }
+  return result;
+}
+
+async function addVideoTracks(draft, vidUrls, timelines, mediaCount, styleCfg, w, h, hasAudio = false, tmpDir = null) {
   const vidTimelines = timelines.filter((_, i) => i % mediaCount < vidUrls.length);
   if (vidTimelines.length === 0) return draft;
 
-  // API maps url[i] → timelines[i] 1:1 — cycle URLs to fill all slots
-  const expandedUrls = vidTimelines.map((_, i) => vidUrls[i % vidUrls.length]);
+  // Pre-trim clips to slot duration — CapCut ignores timeline endpoint otherwise
+  const activeUrls = tmpDir
+    ? await trimClipsToSegDur(vidUrls, vidTimelines, tmpDir)
+    : vidUrls;
+
+  // API maps url[i] → timelines[i] 1:1 — cycle trimmed URLs to fill all slots
+  const expandedUrls = vidTimelines.map((_, i) => activeUrls[i % activeUrls.length]);
 
   const infos = await cc.videoInfos({
     videoUrls: expandedUrls, timelines: vidTimelines,
@@ -183,7 +228,7 @@ async function addVideoTracks(draft, vidUrls, timelines, mediaCount, styleCfg, w
     volume: hasAudio ? 0 : 1.0,
   });
   const result = await cc.addVideos(draft, infos);
-  console.log(`[capcut-compose] added ${vidUrls.length} videos on ${vidTimelines.length} segments (${expandedUrls.length} total slots filled)`);
+  console.log(`[capcut-compose] added ${vidUrls.length} videos on ${vidTimelines.length} segments (${expandedUrls.length} slots, clips trimmed to ${((vidTimelines[0]?.end - vidTimelines[0]?.start) / 1e6 || 0).toFixed(1)}s)`);
   return result.draftUrl;
 }
 
@@ -421,9 +466,9 @@ function computeTotalUs(audioBuffer, audioDurUs, targetSec) {
 
 async function assembleDraft(draft, ctx) {
   let current = draft;
-  const { vidUrls, imgUrls, audioUrl, timelines, mediaCount, styleCfg, w, h, totalUs } = ctx;
+  const { vidUrls, imgUrls, audioUrl, timelines, mediaCount, styleCfg, w, h, totalUs, tmpDir } = ctx;
 
-  if (vidUrls.length > 0) current = await addVideoTracks(current, vidUrls, timelines, mediaCount, styleCfg, w, h, !!audioUrl);
+  if (vidUrls.length > 0) current = await addVideoTracks(current, vidUrls, timelines, mediaCount, styleCfg, w, h, !!audioUrl, tmpDir);
   if (imgUrls.length > 0) current = await addImageTracks(current, imgUrls, timelines, mediaCount, vidUrls.length, styleCfg, w, h);
   if (audioUrl) current = await addAudioTrack(current, audioUrl, totalUs);
   current = await addStyleFilter(current, styleCfg, totalUs);
