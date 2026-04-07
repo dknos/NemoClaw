@@ -78,7 +78,30 @@ function getProvider(model) {
 const WORKSHOP_DIR = path.join(os.homedir(), "netify-dev", "public", "data", "workshop");
 const ACTIVE_FILE = path.join(WORKSHOP_DIR, "active.json");
 const GALLERY_FILE = path.join(WORKSHOP_DIR, "gallery.json");
+const LIVE_SESSION_FILE = path.join(os.homedir(), "netify-dev", "public", "data", "live-session.json");
 if (!fs.existsSync(WORKSHOP_DIR)) fs.mkdirSync(WORKSHOP_DIR, { recursive: true });
+
+// ── Live chat influence (read-only) ─────────────────────────────────
+function readLiveSession() {
+  try {
+    const raw = fs.readFileSync(LIVE_SESSION_FILE, "utf8");
+    const s = JSON.parse(raw);
+    if (!s.active || s.paused) return null;
+    const inf = s.influence;
+    if (!inf || (!inf.mood && !inf.topic && !inf.shoutout)) return null;
+    return inf;
+  } catch (_e) { return null; }
+}
+
+function reportSessionTokens(tokens) {
+  try {
+    const raw = fs.readFileSync(LIVE_SESSION_FILE, "utf8");
+    const s = JSON.parse(raw);
+    if (!s.active) return;
+    s.sessionTokensUsed = (s.sessionTokensUsed || 0) + tokens;
+    fs.writeFileSync(LIVE_SESSION_FILE, JSON.stringify(s, null, 2));
+  } catch (_e) { /* no live session */ }
+}
 
 // ── Parse CLI args ──────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -516,7 +539,7 @@ async function build() {
     // ── Phase 1: Vision (Candy) ─────────────────────────────────────
     console.log(`[workshop] Phase 1: Vision`);
     const briefSection = topicBrief ? `\n\n=== DETAILED BRIEF ===\n${topicBrief.slice(0, 6000)}\n=== END BRIEF ===\n\nUse the brief as your primary reference. Follow its color palette, layout, and feature specifications closely.` : "";
-    const visionPrompt = `Design a webpage about: "${topic}"
+    let visionPrompt = `Design a webpage about: "${topic}"
 The team has ${(budgetMs / 60000).toFixed(0)} minutes to build it autonomously.
 Describe:
 1. Color palette (3-4 hex codes with names)
@@ -528,7 +551,18 @@ Describe:
 
 Be specific and concise. This will be coded immediately.${briefSection}${getPlanContext("Candy")}`;
 
+    const liveInfluence = readLiveSession();
+    if (liveInfluence) {
+      const parts = [];
+      if (liveInfluence.mood)     parts.push(`mood: ${liveInfluence.mood}`);
+      if (liveInfluence.topic)    parts.push(`theme: ${liveInfluence.topic}`);
+      if (liveInfluence.shoutout) parts.push(`shoutout viewer: ${liveInfluence.shoutout}`);
+      visionPrompt += `\n\nLIVE AUDIENCE DIRECTION (${liveInfluence.votes || 0} votes from YouTube chat): ${parts.join(" | ")}`;
+      console.log(`[workshop] live chat influence applied: ${parts.join(" | ")}`);
+    }
+
     const vision = await callLLM({ model: CANDY_MODEL, systemPrompt: CANDY_SOUL, userPrompt: visionPrompt, maxTokens: 500, temperature: 0.9, _agent: "Candy" });
+    if (vision.tokens) reportSessionTokens(vision.tokens);
     if (!vision.text) {
       console.error("[workshop] Vision failed — aborting");
       buildDoc.status = "failed";
