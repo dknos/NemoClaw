@@ -63,7 +63,7 @@ async function getVertexToken() {
 // Llama  = extra improvement pass
 const CANDY_MODEL  = "gemini-3.1-flash";                              // Vertex Gemini — fast + vision
 const PIPES_MODEL  = "gemini-3.1-flash";                              // Vertex Gemini — full flash
-const MAOMAI_MODEL = "qwen/qwen3-6b";                                 // OpenRouter
+const MAOMAI_MODEL = "gemini-2.0-flash";                              // Vertex Gemini — fast codegen
 const LLAMA_MODEL  = "meta/llama-4-maverick-17b-128e-instruct-maas"; // Vertex MaaS — Llama pass
 
 const VERTEX_PROJECT = "drivenemo";
