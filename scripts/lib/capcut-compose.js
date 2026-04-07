@@ -9,6 +9,24 @@ const os = require("os");
 
 const cc = require("./capcut-client");
 const { startFileServer, writeMediaFiles } = require("./capcut-file-server");
+const { findFfprobe } = require("./ffmpeg-utils");
+
+// Get video durations in microseconds using ffprobe
+function getVideoDurationsUs(vidPaths) {
+  const { execSync } = require("child_process");
+  const ffprobe = findFfprobe();
+  if (!ffprobe) return vidPaths.map(() => 0);
+  return vidPaths.map(p => {
+    try {
+      const out = execSync(
+        `"${ffprobe}" -v quiet -show_entries format=duration -of csv=p=0 "${p}"`,
+        { timeout: 10000 }
+      ).toString().trim();
+      const dur = Math.round(parseFloat(out) * 1_000_000);
+      return dur > 0 ? dur : 0;
+    } catch { return 0; }
+  });
+}
 
 // ── Presets (shared with video-editor.js) ───────────────────────────────────
 
@@ -114,7 +132,7 @@ async function transcribeAndTrim(audioPath, tmpDir, audioDurSec, targetSec) {
 
 // ── Timeline building ───────────────────────────────────────────────────────
 
-async function buildTimelines(totalUs, mediaCount, beats, style) {
+async function buildTimelines(totalUs, mediaCount, beats, style, vidDurationsUs = []) {
   if (beats && beats.beatTimestamps?.length > 2) {
     const { beatTimelinesUs } = require("./beat-detect");
     return beatTimelinesUs(beats, {
@@ -124,10 +142,23 @@ async function buildTimelines(totalUs, mediaCount, beats, style) {
     });
   }
 
-  const timelines = await cc.getTimelines(totalUs, mediaCount * 2);
+  // Compute segment count from actual video durations to avoid black gaps.
+  // Use min duration so every clip fills its slot without overflow.
+  let numSegments = mediaCount * 2;
+  if (vidDurationsUs.length > 0) {
+    const validDurs = vidDurationsUs.filter(d => d > 0);
+    if (validDurs.length > 0) {
+      const minDurUs = Math.min(...validDurs);
+      const byDuration = Math.ceil(totalUs / minDurUs);
+      numSegments = Math.max(mediaCount * 2, byDuration);
+      console.log(`[capcut-compose] segment count: ${numSegments} (min clip ${(minDurUs/1e6).toFixed(1)}s, total ${(totalUs/1e6).toFixed(1)}s)`);
+    }
+  }
+
+  const timelines = await cc.getTimelines(totalUs, numSegments);
   if (timelines && timelines.length > 0) return timelines;
 
-  const segDur = Math.round(totalUs / (mediaCount * 2));
+  const segDur = Math.round(totalUs / numSegments);
   const fallback = [];
   for (let t = 0; t < totalUs; t += segDur) {
     fallback.push({ start: t, end: Math.min(t + segDur, totalUs) });
@@ -137,7 +168,7 @@ async function buildTimelines(totalUs, mediaCount, beats, style) {
 
 // ── Draft track adders ──────────────────────────────────────────────────────
 
-async function addVideoTracks(draft, vidUrls, timelines, mediaCount, styleCfg, w, h) {
+async function addVideoTracks(draft, vidUrls, timelines, mediaCount, styleCfg, w, h, hasAudio = false) {
   const vidTimelines = timelines.filter((_, i) => i % mediaCount < vidUrls.length);
   if (vidTimelines.length === 0) return draft;
 
@@ -146,6 +177,7 @@ async function addVideoTracks(draft, vidUrls, timelines, mediaCount, styleCfg, w
     transition: styleCfg.transition,
     transitionDuration: styleCfg.transition ? 200000 : null,
     width: w, height: h,
+    volume: hasAudio ? 0 : 1.0,
   });
   const result = await cc.addVideos(draft, infos);
   console.log(`[capcut-compose] added ${vidUrls.length} videos on ${vidTimelines.length} segments`);
@@ -361,6 +393,10 @@ async function prepareMedia(images, videos, audioBuffer, tmpDir) {
     }
   }
 
+  const vidDurationsUs = vidNames.length > 0
+    ? getVideoDurationsUs(vidNames.map(n => path.join(tmpDir, n)))
+    : [];
+
   const fileServer = await startFileServer(tmpDir);
   const baseUrl = fileServer.url;
   return {
@@ -369,6 +405,7 @@ async function prepareMedia(images, videos, audioBuffer, tmpDir) {
     audioUrl: audioName ? `${baseUrl}/${audioName}` : null,
     audioName,
     fileServer,
+    vidDurationsUs,
   };
 }
 
@@ -383,7 +420,7 @@ async function assembleDraft(draft, ctx) {
   let current = draft;
   const { vidUrls, imgUrls, audioUrl, timelines, mediaCount, styleCfg, w, h, totalUs } = ctx;
 
-  if (vidUrls.length > 0) current = await addVideoTracks(current, vidUrls, timelines, mediaCount, styleCfg, w, h);
+  if (vidUrls.length > 0) current = await addVideoTracks(current, vidUrls, timelines, mediaCount, styleCfg, w, h, !!audioUrl);
   if (imgUrls.length > 0) current = await addImageTracks(current, imgUrls, timelines, mediaCount, vidUrls.length, styleCfg, w, h);
   if (audioUrl) current = await addAudioTrack(current, audioUrl, totalUs);
   current = await addStyleFilter(current, styleCfg, totalUs);
@@ -438,7 +475,7 @@ async function capcutCompose(opts) {
     const { draftUrl } = await cc.createDraft(w, h);
     const totalUs = computeTotalUs(audioBuffer, analysis.audioDurUs, targetSec);
     const mediaCount = media.imgUrls.length + media.vidUrls.length;
-    const timelines = await buildTimelines(totalUs, mediaCount, analysis.beats, style);
+    const timelines = await buildTimelines(totalUs, mediaCount, analysis.beats, style, media.vidDurationsUs);
     console.log(`[capcut-compose] ${timelines.length} timeline segments, ${(totalUs / 1_000_000).toFixed(1)}s total`);
 
     const ctx = { ...media, timelines, mediaCount, styleCfg, w, h, totalUs, beattrack, ...analysis, caption, lyrics, lyricsStyle };
