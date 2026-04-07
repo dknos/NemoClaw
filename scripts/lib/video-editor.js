@@ -131,8 +131,8 @@ const SEGMENT_EFFECTS = [
   () => "eq=brightness=0.1,unsharp=7:7:2.0",
   // 18: Glitch — heavy noise + strong RGB separation (CapCut 故障)
   () => "noise=alls=40:allf=t,rgbashift=rh=6:bh=-6:rv=4:bv=-4",
-  // 19: Color Drift — slow animated RGB channel separation
-  () => "rgbashift=rh='2*sin(t)':bh='-2*sin(t)':rv='2*cos(t)':bv='-2*cos(t)'",
+  // 19: Color Drift — RGB channel separation (rgbashift does not support time expressions)
+  () => "rgbashift=rh=4:bh=-4:rv=3:bv=-3",
   // 20: Posterize — reduced color palette, retro/16bit feel (CapCut 90s Quality)
   () => "eq=contrast=1.3,hue=s=0.5,noise=alls=8:allf=t",
   // 21: Speed Pulse — alternating brightness+contrast to simulate tempo change
