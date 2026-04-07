@@ -42,10 +42,10 @@ LIVE_JSON_WB="$HOME/netify-dev/public/data/weirdbox-lab-live.json"
 LIVE_JSON_MP="$HOME/netify-dev/public/data/mindpipes-live.json"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
-STREAM_URL="http://localhost:3001/weirdbox-lab.html"
+STREAM_URL="http://localhost:3001/workshop"
 DURATION=7200
 RES="1280x720"
-FPS=30
+FPS=20
 BITRATE=3000
 MUSIC_FILE=""     # single audio file, loops forever
 MUSIC_PLAYLIST="" # text file with one song path per line
@@ -256,7 +256,7 @@ if [[ -n "$MUSIC_PLAYLIST" ]]; then
     else
       echo "[stream] playlist: $track_count tracks (volume: ${MUSIC_VOLUME})"
       AUDIO_INPUT_ARGS=(-stream_loop -1 -f concat -safe 0 -i "$FFMPEG_CONCAT_FILE")
-      AUDIO_FILTER=(-filter:a "volume=${MUSIC_VOLUME}")
+      AUDIO_FILTER=(-af "aresample=async=1000,volume=${MUSIC_VOLUME}")
     fi
   fi
 fi
@@ -267,7 +267,7 @@ if [[ -z "${AUDIO_INPUT_ARGS[*]}" && -n "$MUSIC_FILE" ]]; then
   else
     echo "[stream] music: $(basename "$MUSIC_FILE") (volume: ${MUSIC_VOLUME}, looping)"
     AUDIO_INPUT_ARGS=(-stream_loop -1 -i "$MUSIC_FILE")
-    AUDIO_FILTER=(-filter:a "volume=${MUSIC_VOLUME}")
+    AUDIO_FILTER=(-af "aresample=async=1000,volume=${MUSIC_VOLUME}")
   fi
 fi
 
@@ -283,23 +283,26 @@ echo "[stream] ─────────────────────�
   -stats \
   -t "$DURATION" \
   \
+  -thread_queue_size 1024 \
+  -use_wallclock_as_timestamps 1 \
   -f x11grab \
-  -r "$FPS" \
+  -framerate "$FPS" \
   -s "${WIDTH}x${HEIGHT}" \
   -i "${DISPLAY_NUM}.0+0,0" \
   \
+  -thread_queue_size 1024 \
   "${AUDIO_INPUT_ARGS[@]}" \
   \
   -c:v libx264 \
   -preset veryfast \
-  -tune zerolatency \
   -b:v "${BITRATE}k" \
   -maxrate "${BITRATE}k" \
   -bufsize "${BUFSIZE}k" \
   -g "$GOP" \
-  -keyint_min "$FPS" \
+  -keyint_min "$GOP" \
   -sc_threshold 0 \
   -pix_fmt yuv420p \
+  -r "$FPS" \
   \
   -c:a aac \
   -b:a 128k \
@@ -307,6 +310,7 @@ echo "[stream] ─────────────────────�
   "${AUDIO_FILTER[@]}" \
   \
   -f flv \
+  -flvflags no_duration_filesize \
   "$RTMP_URL"
 
 echo "[stream] FFmpeg finished (duration reached or stream ended)"
