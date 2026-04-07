@@ -4,13 +4,13 @@
 // Fun effects (shake, pulse zoom, glitch, speed ramps) are applied per-segment.
 
 const fs = require("fs");
-const { execSync, execFileSync } = require("child_process");
+const { execSync, execFileSync: _execFileSync } = require("child_process");
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const FFMPEG_BIN = (() => {
   const candidates = ["/home/nemoclaw/.local/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"];
-  for (const p of candidates) { try { if (fs.existsSync(p)) return p; } catch {} }
+  for (const p of candidates) { try { if (fs.existsSync(p)) return p; } catch (_e) { /* ignore */ } }
   return "ffmpeg";
 })();
 const FFPROBE_BIN = FFMPEG_BIN;
@@ -67,8 +67,8 @@ function ffmpegExec(args, label, timeout = EXEC_TIMEOUT) {
   } catch (err) {
     const stderr = err.stderr ? err.stderr.toString().slice(-500) : "";
     const killed = err.killed || err.signal === "SIGTERM";
-    if (killed) throw new Error(`FFmpeg timed out (${Math.round(timeout / 1000)}s) during: ${label}`);
-    throw new Error(`FFmpeg failed during ${label}: ${stderr || err.message}`);
+    if (killed) throw new Error(`FFmpeg timed out (${Math.round(timeout / 1000)}s) during: ${label}`, { cause: err });
+    throw new Error(`FFmpeg failed during ${label}: ${stderr || err.message}`, { cause: err });
   }
 }
 
@@ -109,23 +109,53 @@ const SEGMENT_EFFECTS = [
   () => "vignette=PI/3",
   // 7: Saturation wave — colors breathe
   () => "eq=saturation=1+0.3*sin(2*PI*t)",
+  // 8: CCD Flash — bright burst on entry, decays over segment (CapCut CCD闪光)
+  () => "eq=brightness='0.5*max(0,1-t*3)'",
+  // 9: Screen Shake — random crop offset simulating camera shake (CapCut 振动)
+  () => "crop=iw-20:ih-20:10+5*sin(30*t):10+5*cos(25*t)",
+  // 10: Chromatic Aberration (strong) — wider channel split (CapCut RGB描边)
+  () => "rgbashift=rh=8:bh=-8:rv=-5:bv=5",
+  // 11: Freeze Flicker — low fps + brightness oscillation (CapCut 定格闪烁)
+  () => "fps=4,eq=brightness='0.15*sin(8*PI*t)'",
+  // 12: Negative Flash — brief negative inversion (CapCut 底片闪烁)
+  () => "negate,eq=brightness=-0.1",
+  // 13: Scanline CRT — dark horizontal lines every 4px (CapCut 扫描线)
+  () => "geq=lum='lum(X,Y)*if(mod(Y,4),1,0.7)':cb='cb(X,Y)':cr='cr(X,Y)'",
+  // 14: VHS — noise + color bleed + slight blur (CapCut VHS III)
+  () => "noise=alls=20:allf=t,colorbalance=rs=0.1:gs=-0.05:bs=-0.05,gblur=sigma=0.5",
+  // 15: Motion Blur — temporal blend (CapCut 运动模糊)
+  () => "tblend=all_mode=average",
+  // 16: Brightness Strobe — rapid on/off flash, beat-synced feel (CapCut 频闪)
+  () => "eq=brightness='0.3*abs(sin(6*PI*t))'",
+  // 17: Neon Edge Glow — sharpen + brighten edges for neon outline feel (CapCut 霓虹灯)
+  () => "eq=brightness=0.1,unsharp=7:7:2.0",
+  // 18: Glitch — heavy noise + strong RGB separation (CapCut 故障)
+  () => "noise=alls=40:allf=t,rgbashift=rh=6:bh=-6:rv=4:bv=-4",
+  // 19: Color Drift — slow animated RGB channel separation
+  () => "rgbashift=rh='2*sin(t)':bh='-2*sin(t)':rv='2*cos(t)':bv='-2*cos(t)'",
+  // 20: Posterize — reduced color palette, retro/16bit feel (CapCut 90s Quality)
+  () => "eq=contrast=1.3,hue=s=0.5,noise=alls=8:allf=t",
+  // 21: Speed Pulse — alternating brightness+contrast to simulate tempo change
+  () => "eq=brightness='0.05*sin(4*PI*t)':contrast='1+0.1*sin(4*PI*t)'",
+  // 22: Heavy Grain — intense film grain (CapCut 画面噪波)
+  () => "noise=alls=30:allf=t",
 ];
 
 function pickEffect(segIndex, style) {
-  // Moody/dark styles lean into vignette, grain, rgb shift
-  // Vibrant/bright lean into hue rotate, pulse zoom
-  // Dreamy gets vignette pulse
+  // Each pool lists effect indices; 0s are filtered out.
+  // Segments cycle through the pool: seg[i] gets pool[i % pool.length].
   const styleWeights = {
-    cinematic: [0, 1, 0, 3, 0, 6, 0, 0],    // vignette pulse, grain, sharp vignette
-    vibrant:   [0, 0, 2, 0, 4, 5, 0, 7],    // hue rotate, rgb shift, brightness pulse, sat wave
-    moody:     [0, 1, 0, 3, 4, 0, 6, 0],    // vignette, grain, rgb shift, sharp vig
-    vintage:   [0, 1, 0, 3, 0, 0, 6, 0],    // vignette, grain, sharp vig
-    dark:      [0, 1, 0, 3, 4, 0, 6, 0],    // vignette, grain, rgb shift, sharp vig
-    dreamy:    [0, 1, 2, 0, 0, 5, 0, 7],    // vignette, hue, brightness, sat wave
-    bright:    [0, 0, 2, 0, 0, 5, 0, 7],    // hue, brightness pulse, sat wave
-    clean:     [0, 0, 0, 0, 0, 0, 0, 0],    // no effects
-    brainslop: [0, 0, 0, 3, 4, 5, 0, 7],    // grain, rgb shift, brightness, sat wave
-    ludicrous: [0, 1, 2, 3, 4, 5, 0, 7],    // everything — chaos
+    cinematic: [0, 1, 0, 3, 0, 6, 0, 0, 15, 21],          // + motion blur, speed pulse
+    vibrant:   [0, 0, 2, 0, 4, 5, 0, 7, 16, 21],          // + strobe, speed pulse
+    moody:     [0, 1, 0, 3, 10, 0, 6, 0, 8, 12, 19],      // + chromatic, flash, negative, drift
+    vintage:   [0, 1, 0, 3, 0, 0, 6, 0, 14, 20],          // + VHS, posterize
+    dark:      [0, 1, 0, 3, 10, 0, 6, 0, 8, 12, 13],      // + chromatic, flash, negative, scanline
+    dreamy:    [0, 1, 2, 0, 0, 5, 0, 7, 15, 19],          // + motion blur, color drift
+    bright:    [0, 0, 2, 0, 0, 5, 0, 7, 16, 21],          // + strobe, speed pulse
+    clean:     [0, 0, 0, 0, 0, 0, 0, 0],                   // no effects
+    brainslop: [0, 0, 0, 3, 10, 5, 0, 7, 8, 9, 16, 19],   // + chromatic, flash, shake, strobe, drift
+    ludicrous: [0, 1, 2, 3, 10, 5, 0, 7, 8, 9, 11, 18, 16, 22],  // everything chaotic + freeze, glitch, strobe, heavy grain
+    "16bit-spiritual": [0, 13, 0, 3, 4, 11, 0, 20, 14, 22], // scanline, grain, rgb, freeze, posterize, VHS, heavy grain
   };
   const pool = (styleWeights[style] || styleWeights.cinematic).filter(i => i > 0);
   if (pool.length === 0) return 0;
@@ -223,7 +253,7 @@ function stretchVideo(inputPath, outputPath, clipDur, targetDur, w, h, fps, colo
 
 function computeTimeline({ imagePaths, videoPaths, targetSec }) {
   const videoDurations = videoPaths.map(p => probeDuration(p));
-  const totalNativeMedia = videoDurations.reduce((s, d) => s + d, 0) + imagePaths.length * IMG_DEFAULT_DUR;
+  const _totalNativeMedia = videoDurations.reduce((s, d) => s + d, 0) + imagePaths.length * IMG_DEFAULT_DUR;
   const numSegments = imagePaths.length + videoPaths.length;
   if (numSegments === 0) return { segments: [], totalDurationSec: 0, transitionDurSec: TRANSITION_DUR };
 
@@ -411,6 +441,7 @@ Dialogue: 0,0:00:00.00,0:00:04.00,Default,,0,0,0,,${safeText}
 // Instead of playing clips sequentially, chops source media into many short
 // random segments from different starting points → hard-cut concat.
 
+// eslint-disable-next-line complexity
 function computeChoppyTimeline({ imagePaths, videoPaths, targetSec, style, beats = null }) {
   const cfg = CHOPPY_STYLES[style];
   if (!cfg) return null; // not a choppy style
@@ -536,13 +567,16 @@ async function renderChoppyTimeline(plan, { style, caption, audioPath, tmpDir, l
     const seg = segments[i];
     const outPath = `${tmpDir}/slice_${i}.mp4`;
 
-    // Beat-reactive effects: on peak segments add flash + zoom punch
-    const peakEffect = seg.onPeak ? `,fade=t=in:st=0:d=0.08:color=white,zoompan=z='min(zoom+0.002,1.08)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${w}x${h}:fps=${fps}` : "";
+    // Beat-reactive effects: on peak segments add CCD flash + per-segment effect
+    const effectIdx = pickEffect(i, style);
+    const effectFilter = getEffectFilter(effectIdx, fps);
+    const peakFlash = seg.onPeak ? ",eq=brightness='0.4*max(0,1-t*6)'" : "";
 
     if (seg.type === "video-slice") {
-      const vf = `${scaleFilter},${colorFilter}${seg.onPeak ? ",fade=t=in:st=0:d=0.08:color=white" : ""}`;
+      const extras = [colorFilter, effectFilter, peakFlash.replace(/^,/, "")].filter(Boolean).join(",");
+      const vf = extras ? `${scaleFilter},${extras}` : scaleFilter;
       const seekArg = seg.startAt > 0.1 ? `-ss ${seg.startAt.toFixed(3)}` : "";
-      ffmpegExec(`-y ${seekArg} -i "${seg.filePath}" -t ${seg.durationSec.toFixed(3)} -vf "${vf}" -c:v libx264 -crf 23 -preset fast -an "${outPath}"`, `slice seg#${i}`);
+      ffmpegExec(`-y ${seekArg} -i "${seg.filePath}" -t ${seg.durationSec.toFixed(3)} -vf "${vf}" -c:v libx264 -crf 23 -preset fast -an "${outPath}"`, `slice seg#${i} fx=${effectIdx}`);
       if (seg.reverse) {
         const revPath = `${tmpDir}/slice_rev_${i}.mp4`;
         ffmpegExec(`-y -i "${outPath}" -vf "reverse" -c:v libx264 -crf 23 -preset fast -an "${revPath}"`, `reverse seg#${i}`);
@@ -550,11 +584,12 @@ async function renderChoppyTimeline(plan, { style, caption, audioPath, tmpDir, l
         fs.renameSync(revPath, outPath);
       }
     } else {
-      // Image: fast Ken Burns or static — with flash on peaks
+      // Image: fast Ken Burns or static — with per-segment effect + flash on peaks
       const frames = Math.ceil(seg.durationSec * fps);
       const kb = kenBurnsFilter(i, frames, w, h);
-      const filters = `${kb},${colorFilter}${seg.onPeak ? ",fade=t=in:st=0:d=0.08:color=white" : ""}`;
-      ffmpegExec(`-y -loop 1 -i "${seg.filePath}" -vf "${filters}" -c:v libx264 -crf 23 -preset fast -t ${seg.durationSec.toFixed(3)} -an "${outPath}"`, `img-slice seg#${i}`);
+      const extras = [colorFilter, effectFilter, peakFlash.replace(/^,/, "")].filter(Boolean).join(",");
+      const filters = extras ? `${kb},${extras}` : kb;
+      ffmpegExec(`-y -loop 1 -i "${seg.filePath}" -vf "${filters}" -c:v libx264 -crf 23 -preset fast -t ${seg.durationSec.toFixed(3)} -an "${outPath}"`, `img-slice seg#${i} fx=${effectIdx}`);
     }
     slicePaths.push(outPath);
   }
@@ -620,6 +655,7 @@ async function renderChoppyTimeline(plan, { style, caption, audioPath, tmpDir, l
 
 // ── Main export ─────────────────────────────────────────────────────────────
 
+// eslint-disable-next-line complexity
 async function editVideo({ images = [], videos = [], audioBuffer = null, preset = "short", style = "cinematic", caption = null, lyrics = false, lyricsStyle = "karaoke", resolution, customAr, autoAspect = false, stretch = false }) {
   let effectivePreset = preset;
 
@@ -641,7 +677,7 @@ async function editVideo({ images = [], videos = [], audioBuffer = null, preset 
         if (effectivePreset !== preset) console.log(`[video-editor] auto-aspect: ${preset} → ${effectivePreset} (detected ${detected})`);
       }
     } catch (e) { console.warn(`[video-editor] auto-aspect detection failed:`, e.message); }
-    finally { try { fs.rmSync(probeTmp, { recursive: true, force: true }); } catch {} }
+    finally { try { fs.rmSync(probeTmp, { recursive: true, force: true }); } catch (_e) { /* ignore */ } }
   }
 
   const presetCfg = resolvePreset(effectivePreset, resolution, customAr);
@@ -736,10 +772,10 @@ async function editVideo({ images = [], videos = [], audioBuffer = null, preset 
 
     return { videoBuffer, totalDurationSec: plan.totalDurationSec };
   } finally {
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
   }
 }
 
 module.exports = { editVideo, computeTimeline, computeChoppyTimeline, renderTimeline, renderChoppyTimeline, PRESETS, STYLE_FILTERS, CHOPPY_STYLES, FFMPEG_BIN, FFPROBE_BIN };
 // Re-export beat-detect for convenience
-try { Object.assign(module.exports, require("./beat-detect")); } catch {}
+try { Object.assign(module.exports, require("./beat-detect")); } catch (_e) { /* ignore */ }

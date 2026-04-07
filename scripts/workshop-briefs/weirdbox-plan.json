@@ -1,0 +1,81 @@
+{
+  "planBy": "claude-code",
+  "timestamp": 1775500000000,
+  "topic": "weirdbox",
+  "version": "2.0",
+  "influence": "hoshino.gg — polished anime/gacha gaming aesthetic with glassmorphism, particle backgrounds, gradient borders, smooth card animations, rich layered visual effects",
+  "sections": [
+    {
+      "id": "header",
+      "description": "WEIRDBOX logo with animated glitch effect (CSS skew + RGB split text-shadow), agent status row (3 colored dots showing Candy/Pipes/MaoMao state), currency display (gems + energy with animated counters), settings gear icon. Glassmorphism bar with backdrop-blur.",
+      "priority": 1
+    },
+    {
+      "id": "tab-navigation",
+      "description": "5 tabs: HUNT, ARENA, FUSION, WEIRD ZONE, SHOP. Active tab has gradient underline (#ff3366 to #00e5ff) and glow. Tabs are pill-shaped with hover scale + brightness. Mobile: horizontal scroll.",
+      "priority": 1
+    },
+    {
+      "id": "game-canvas",
+      "description": "Central game area — 800x500 canvas with CRT overlay (scanlines + vignette). Canvas renders sprite-based creatures using actual PNG spritesheets from /assets/weirdbox/sprites/. Background uses /assets/weirdbox/bg/ images. Particle system for spawn effects, explosions, gem collection. Canvas has subtle screen glow (box-shadow with primary color).",
+      "priority": 1
+    },
+    {
+      "id": "action-panel",
+      "description": "Left sidebar: context-sensitive action buttons. In HUNT mode: SCAN button (costs 10 gems, animated border gradient), AUTO-HUNT toggle. In ARENA: START ROUND, weapon select. Buttons have glassmorphism style, gradient borders, hover glow. Console log at bottom (scrollable, green monospace text like a terminal).",
+      "priority": 2
+    },
+    {
+      "id": "inventory-panel",
+      "description": "Right sidebar: creature collection grid. Each slot shows sprite thumbnail with rarity-colored border glow (Common=#8a6aaa, Rare=#ffe033, Ultra=#00e5ff, Legendary=#ff3366, Mythic=#ffffff rainbow). Click to inspect: shows name, rarity, stats. Empty slots show faint outline. Scrollable grid.",
+      "priority": 2
+    },
+    {
+      "id": "hunt-game",
+      "description": "Click SCAN to reveal a creature on canvas with dramatic animation: screen flash, particles converge to center, sprite materializes with rarity-appropriate fanfare. Common = simple fade. Legendary = screen shake + particle explosion + color burst. Use actual sprite images (slime, frog, ogre, wizard, mummy, drone, observer, sentinel, alien-fly, alien-walk).",
+      "priority": 1
+    },
+    {
+      "id": "arena-game",
+      "description": "30-second timed rounds. Creatures move across canvas using sprite animations. Player clicks to defeat them — hit.png effect plays, explosion if killed. Score counter, combo multiplier, timer bar at top. Creatures spawn from edges, move in patterns. Difficulty scales with wave number.",
+      "priority": 2
+    },
+    {
+      "id": "fusion-lab",
+      "description": "3 input slots (drag creatures from inventory). Combine button triggers fusion animation: sprites swirl together, particle vortex, flash, new creature appears. Output based on input rarity tiers. Slots have glassmorphism backgrounds with dashed borders.",
+      "priority": 3
+    },
+    {
+      "id": "shop",
+      "description": "Grid of upgrade cards with glassmorphism style. Items: Scan Speed (reduce cooldown), Lucky Charm (boost rare drops), Auto-Hunt (passive income), Energy Recharge, Arena Power-Up. Each card shows icon, name, cost, description, level. Purchase animation: gems fly out, card glows.",
+      "priority": 3
+    },
+    {
+      "id": "status-bar",
+      "description": "Bottom bar: scrolling agent activity ticker ('Candy designed a new effect...', 'Pipes reviewed the layout...'), player stats (Level, XP bar with gradient fill, total hunts, total creatures). Thin bar with glassmorphism.",
+      "priority": 2
+    },
+    {
+      "id": "particle-system",
+      "description": "Background particle field (small floating dots, subtle movement). Spawn particles (converging to center on hunt). Explosion particles (radial burst on arena kill). Gem collection particles (fly to currency counter). All canvas-rendered, performant.",
+      "priority": 2
+    },
+    {
+      "id": "audio-system",
+      "description": "Web Audio API SFX: click beep (440Hz sine 50ms), scan sweep (200->800Hz 300ms), common catch (single tone), rare catch (ascending chord), legendary catch (dramatic fanfare), arena hit (noise burst), fusion whoosh. Mute button in header.",
+      "priority": 2
+    },
+    {
+      "id": "persistence",
+      "description": "localStorage save/load: coins, energy, level, xp, inventory (creature counts), upgrades, achievements, total stats. Auto-save every 30 seconds + on page unload. Load on init.",
+      "priority": 2
+    }
+  ],
+  "techNotes": "Canvas2D for all game rendering (sprites via new Image()). Sprites at /assets/weirdbox/sprites/*.png, backgrounds at /assets/weirdbox/bg/*.png, effects at /assets/weirdbox/fx/*.png. Use requestAnimationFrame for render loop. CSS grid for 3-column layout. Press Start 2P font from Google Fonts. Font Awesome for icons. Web Audio API oscillators for SFX. localStorage for persistence. All in single HTML file — inline CSS + JS.",
+  "qualityBar": "Should feel like a polished indie game launcher — on par with hoshino.gg quality. Glassmorphism panels with real depth, smooth 60fps canvas, sprite animations that feel alive, satisfying click feedback, particle effects that add magic without lag. The gap between this and a real game should be 'surprisingly small'.",
+  "agentInstructions": {
+    "Pipes": "Judge this against AAA gaming websites. The bar is hoshino.gg level polish. Focus on: glassmorphism consistency (backdrop-blur + rgba backgrounds + subtle borders), animation easing (use cubic-bezier, not linear), particle performance (cap at 200 particles), color harmony (primary #ff3366, secondary #00e5ff, accent #ffe033 against #05000a background), typography hierarchy (Press Start 2P for headers, monospace for data).",
+    "Candy": "Think anime gacha game meets cyberpunk arcade. Lean into the 'built by AI agents' identity — glitch effects, scan lines, digital artifacts as FEATURES not bugs. Every interaction should feel satisfying: button clicks should pulse, discoveries should sparkle, rare finds should SHAKE THE SCREEN. The CRT overlay is sacred — keep it.",
+    "MaoMao": "Follow the section structure exactly. Use the sprite paths from /assets/weirdbox/ — they exist and load via img src. Canvas sprites: preload all images, draw with drawImage(). Keep the render loop tight — separate update() and draw(). Use requestAnimationFrame. localStorage.setItem/getItem for persistence. All game state in one object."
+  }
+}

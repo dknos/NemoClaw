@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global fetch, URLSearchParams, BUFFER_IG_ID */
+/* global URLSearchParams, BUFFER_IG_ID */
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
@@ -595,6 +595,7 @@ function gifButtons(msgId) {
   );
 }
 
+// eslint-disable-next-line complexity
 function extractUserGifUrl(msg) {
   // GIF file attachment
   for (const att of msg.attachments.values()) {
@@ -944,6 +945,7 @@ async function _getOrCreateContextCache(systemInstruction, geminiTools, toolConf
   const geminiProxy = http.createServer((req, res) => {
     let body = "";
     req.on("data", c => body += c);
+    // eslint-disable-next-line complexity
     req.on("end", async () => {
       console.log(`[gemini-proxy] ${req.method} ${req.url} (${body.length} bytes)`);
 
@@ -1114,6 +1116,7 @@ async function _getOrCreateContextCache(systemInstruction, geminiTools, toolConf
           }, gRes => {
             const chunks = [];
             gRes.on("data", c => chunks.push(c));
+            // eslint-disable-next-line complexity
             gRes.on("end", () => {
               try {
                 const geminiResp = JSON.parse(Buffer.concat(chunks).toString());
@@ -1366,6 +1369,7 @@ async function getPublicMediaUrl(fileBuffer, mimeType) {
 }
 
 // Post to Instagram via Facebook Graph API
+// eslint-disable-next-line complexity
 async function postToBuffer({ text, mediaBuffer, mimeType, channels = ["instagram"] }) {
   if (!FB_PAGE_TOKEN) throw new Error("FB_PAGE_TOKEN not set");
 
@@ -1712,10 +1716,13 @@ async function generateImageWithZTurbo(prompt, seed, style = "none") {
   console.log(`[zturbo] "${finalPrompt.slice(0, 80)}" seed:${seed} style:${style}`);
   const promptId = await submitComfyWorkflow(workflow);
   console.log(`[zturbo] submitted: ${promptId}`);
+  const zt0 = Date.now();
   const fileInfo = await waitForComfyImage(promptId, 120000);
   console.log(`[zturbo] done: ${fileInfo.filename}`);
   bumpCounter("images");
-  return await downloadComfyFile(fileInfo);
+  const ztBuf = await downloadComfyFile(fileInfo);
+  reportGenEvent({ type: GenType.ZTURBO, status: GenStatus.SUCCESS, durationMs: Date.now() - zt0, outputBytes: ztBuf.length, context: { prompt: finalPrompt, style, seed } });
+  return ztBuf;
 }
 
 // ── CapCut API composition (primary) ─────────────────────────────────────────
@@ -1767,7 +1774,7 @@ async function composeVideoWithCapCutAPI({ videoPaths = [], style = "cinematic",
 
 // ── ffmpeg/ffprobe discovery — imported from shared util ─────────
 const { findFfmpeg, findFfprobe: _findFfprobe, getMediaDuration } = require("./lib/ffmpeg-utils");
-const { initGenMonitor, reportGenEvent, GenStatus, GenType } = require("./lib/gen-monitor");
+const { initGenMonitor, reportGenEvent, GenStatus, GenType, startTelemetryWriter } = require("./lib/gen-monitor");
 
 const STYLE_FFMPEG_FILTERS = {
   cinematic: "curves=vintage,colorbalance=rs=-0.05:gs=0:bs=0.05:rm=0:gm=0:bm=0:rh=0.05:gh=0:bh=-0.05,eq=contrast=1.1:brightness=-0.02:saturation=0.85",
@@ -1857,6 +1864,7 @@ async function generateVideoWithComfyUI(prompt, imageBuffer = null, durationSec 
   await freeComfyMemory();
   const seed = Math.floor(Math.random() * 2147483647);
   const dur = Math.max(2, Math.min(30, durationSec || 10)); // clamp 2-30s
+  const vt0 = Date.now();
 
   if (imageBuffer) {
     // I2V mode — use the dedicated I2V workflow (combi 1.1)
@@ -1872,7 +1880,9 @@ async function generateVideoWithComfyUI(prompt, imageBuffer = null, durationSec 
     const fileInfo = await waitForComfyResult(promptId, 900000);
     console.log(`[video] done: ${fileInfo.filename}`);
     bumpCounter("videos");
-    return await downloadComfyFile(fileInfo);
+    const vidBuf = await downloadComfyFile(fileInfo);
+    reportGenEvent({ type: GenType.LTX_I2V, status: GenStatus.SUCCESS, durationMs: Date.now() - vt0, outputBytes: vidBuf.length, context: { prompt, seed, durationSec: dur, mode: "i2v" } });
+    return vidBuf;
   } else {
     // T2V mode — use the new dedicated T2V workflow
     const workflow = JSON.parse(fs.readFileSync(COMFY_T2V_WORKFLOW, "utf-8"));
@@ -1885,7 +1895,9 @@ async function generateVideoWithComfyUI(prompt, imageBuffer = null, durationSec 
     const fileInfo = await waitForComfyResult(promptId, 900000);
     console.log(`[video] done: ${fileInfo.filename}`);
     bumpCounter("videos");
-    return await downloadComfyFile(fileInfo);
+    const vidBuf = await downloadComfyFile(fileInfo);
+    reportGenEvent({ type: GenType.LTX_T2V, status: GenStatus.SUCCESS, durationMs: Date.now() - vt0, outputBytes: vidBuf.length, context: { prompt, seed, durationSec: dur, mode: "t2v" } });
+    return vidBuf;
   }
 }
 
@@ -2071,6 +2083,7 @@ async function generateChainedVideo(segments, inputBuffers, msgReplyFn) {
 
 async function generateCombiVideoWithComfyUI(prompt, firstImageBuffer, lastImageBuffer, durationSec = 10) {
   await freeComfyMemory();
+  const combi0 = Date.now();
   const workflow = JSON.parse(fs.readFileSync(COMFY_COMBI_WORKFLOW, "utf-8"));
   const seed = Math.floor(Math.random() * 2147483647);
   const dur = Math.max(2, Math.min(30, durationSec || 10));
@@ -2097,7 +2110,9 @@ async function generateCombiVideoWithComfyUI(prompt, firstImageBuffer, lastImage
   const fileInfo = await waitForComfyResult(promptId, 720000); // 12 min
   console.log(`[combi-video] done: ${fileInfo.filename}`);
   bumpCounter("videos");
-  return await downloadComfyFile(fileInfo);
+  const combiBuf = await downloadComfyFile(fileInfo);
+  reportGenEvent({ type: GenType.LTX_COMBI, status: GenStatus.SUCCESS, durationMs: Date.now() - combi0, outputBytes: combiBuf.length, context: { prompt, seed, durationSec: dur, mode: "combi" } });
+  return combiBuf;
 }
 
 // ── NVIDIA asset upload for img2img ──────────────────────────────
@@ -2289,6 +2304,7 @@ async function describeImageUrl(imageUrl) {
   });
 }
 
+// eslint-disable-next-line complexity
 async function buildMessageWithImages(msg) {
   const imageUrls = [];
 
@@ -2745,10 +2761,12 @@ client.once("ready", async () => {
   // Initialize generation monitor — posts to monitor channel (env or first allowed channel)
   const monitorChanId = process.env.GEN_MONITOR_CHANNEL || (ALLOWED_CHANNELS[0] && ALLOWED_CHANNELS[0].channelId) || null;
   initGenMonitor(client, monitorChanId);
+  startTelemetryWriter(300000); // write telemetry summary every 5 min
 });
 
 // ── Slash command & button interaction handler ───────────────────
 
+// eslint-disable-next-line complexity
 client.on("interactionCreate", async (interaction) => {
   try {
     // ── Button interactions ──────────────────────────────────────
@@ -3741,7 +3759,7 @@ client.on("interactionCreate", async (interaction) => {
           try { fs.unlinkSync(tmpOut); } catch { /* ignored */ }
         } catch (e) {
           console.error("[edit/create] failed:", e);
-          reportGenEvent({ type: GenType.FFMPEG_EDIT, status: GenStatus.ERROR, error: e, userId: interaction.user?.id, userName: interaction.user?.username, context: { preset, style, beattrack, lyrics, mediaCount: images.length + videos.length } });
+          reportGenEvent({ type: GenType.FFMPEG_EDIT, status: GenStatus.ERROR, error: e, userId: interaction.user?.id, userName: interaction.user?.username, context: { preset, style, mediaCount: images.length + videos.length } });
           await interaction.editReply(`❌ Edit failed: ${e.message.slice(0, 300)}`);
         }
         return;
@@ -4829,7 +4847,7 @@ client.on("interactionCreate", async (interaction) => {
         generationContext.set(interaction.id, { prompt: tags, audioBuf, type: "music" });
         fs.unlinkSync(tmpMp3);
       } catch (e) {
-        reportGenEvent({ type: GenType.ACESTEP_MUSIC, status: GenStatus.ERROR, error: e, userId: interaction.user?.id, userName: interaction.user?.username, context: { prompt } });
+        reportGenEvent({ type: GenType.ACESTEP_MUSIC, status: GenStatus.ERROR, error: e, userId: interaction.user?.id, userName: interaction.user?.username, context: { prompt: tags } });
         await interaction.editReply(`Music generation failed: ${e.message.slice(0, 200)}`);
       }
       return;
@@ -5231,7 +5249,7 @@ client.on("interactionCreate", async (interaction) => {
         try { fs.unlinkSync(tmpOut); } catch { /* ignored */ }
       } catch (e) {
         console.error("[edit-go] failed:", e);
-        reportGenEvent({ type: GenType.FFMPEG_EDIT, status: GenStatus.ERROR, error: e, userId: interaction.user?.id, userName: interaction.user?.username, context: { preset, style, beattrack, lyrics, mediaCount: images.length + videos.length } });
+        reportGenEvent({ type: GenType.FFMPEG_EDIT, status: GenStatus.ERROR, error: e, userId: interaction.user?.id, userName: interaction.user?.username, context: { preset, style, mediaCount: images.length + videos.length } });
         await interaction.editReply(`❌ Edit failed: ${e.message.slice(0, 300)}`);
       }
       return;
@@ -5378,23 +5396,101 @@ client.on("interactionCreate", async (interaction) => {
         ].filter(Boolean).join(" | ");
 
         if (renderMode === "desktop") {
-          // Phase 3: Copy to Desktop and trigger export
+          // ── CapCut Desktop render — real effects ──
           try {
+            await interaction.editReply(`🎬 **CapCut** draft ready — ${info}\n⏳ Exporting via CapCut Desktop... (up to 5 min)`);
             const { exportViaDesktop } = require("./lib/capcut-desktop-export");
-            const exportResult = await exportViaDesktop(result.draftUrl, result.fileServer?.url, result.tmpDir);
+            const fileServerUrl = result.fileServer?.url || `http://host.docker.internal:${result.fileServer?.port || 0}`;
+            const ts = new Date().toISOString().slice(0, 16).replace("T", "_").replace(/:/g, "-");
+            const draftName = `${style}-${preset}-${ts}`;
+            const desktopResult = await exportViaDesktop(result.draftUrl, fileServerUrl, result.tmpDir, { exportTimeoutMs: 300000, draftName });
             cleanupCompose(result);
-            await interaction.editReply(`🎬 **CapCut Draft Exported** — ${info}\n✅ ${exportResult.message}\n📁 Draft ID: \`${exportResult.draftId}\``);
-          } catch (exportErr) {
+
+            if (!desktopResult.success || !desktopResult.filePath) {
+              const dlWin = desktopResult.downloadsPath ? `\n📁 Downloads: \`CapCut-Drafts\\${desktopResult.friendlyName}\`` : "";
+              await interaction.editReply(`🎬 **CapCut Draft Created** — ${info}\n⚠️ Desktop export: ${desktopResult.message}${dlWin}\n📋 Named: \`${desktopResult.friendlyName || result.draftId}\``);
+              generationContext.set(interaction.id, { type: "capcut", draftUrl: result.draftUrl, prompt: caption || `${preset} ${style} capcut` });
+              return;
+            }
+
+            const videoBuffer = fs.readFileSync(desktopResult.filePath);
+            const sizeMB = (videoBuffer.length / 1024 / 1024).toFixed(1);
+            const DISCORD_LIMIT = 25 * 1024 * 1024;
+
+            if (videoBuffer.length > DISCORD_LIMIT) {
+              let videoUrl;
+              try {
+                const gdrive = require("./google-drive");
+                const folderId = process.env.GDRIVE_MEDIA_FOLDER_ID || process.env.GDRIVE_FOLDER_ID || "";
+                const driveResult = await gdrive.uploadToDrive(desktopResult.filePath, "video/mp4", `capcut-desktop-${preset}-${Date.now()}.mp4`, folderId);
+                videoUrl = driveResult.webViewLink;
+              } catch (uploadErr) {
+                console.warn("[capcut] GDrive failed:", uploadErr.message);
+                try { videoUrl = await getPublicMediaUrl(videoBuffer, "video/mp4"); } catch { videoUrl = null; }
+              }
+              await interaction.editReply({ content: `🎬 **CapCut Desktop** — ${preset} *(${effectiveStyle}, ${sizeMB}MB)* — ${info}\n${videoUrl || "⚠️ Too large for Discord"}` });
+            } else {
+              await interaction.editReply({
+                content: `🎬 **CapCut Desktop** — ${preset} *(${effectiveStyle}, ${sizeMB}MB)* — ${info}`,
+                files: [new AttachmentBuilder(desktopResult.filePath, { name: `capcut-${preset}.mp4` })],
+              });
+            }
+            lastVideoBuffer = videoBuffer; lastVideoSetAt = Date.now();
+            lastVideoMime = "video/mp4";
+            generationContext.set(interaction.id, { type: "video", videoBuf: videoBuffer, prompt: caption || `${preset} ${style} capcut` });
+          } catch (desktopErr) {
             cleanupCompose(result);
-            await interaction.editReply(`🎬 **CapCut Draft Created** — ${info}\n⚠️ Desktop export failed: ${exportErr.message}\n📋 Draft URL: \`${result.draftUrl}\`\nOpen CapCut Desktop to render manually.`);
+            console.error("[capcut] desktop export failed:", desktopErr.message);
+            await interaction.editReply(`🎬 **CapCut Draft Created** — ${info}\n⚠️ Desktop export failed: ${desktopErr.message.slice(0, 200)}\n📋 Draft ID: \`${result.draftId}\``);
+            generationContext.set(interaction.id, { type: "capcut", draftUrl: result.draftUrl, prompt: caption || `${preset} ${style} capcut` });
+
+          }
+        } else if (renderMode === "render") {
+          // ── FFmpeg render — approximated effects ──
+          try {
+            await interaction.editReply(`🎬 **CapCut** draft ready — ${info}\n⏳ Rendering with FFmpeg...`);
+            const { editVideo } = require("./lib/video-editor");
+            const editResult = await editVideo({ images, videos, audioBuffer: audios[0] || null, preset, style: effectiveStyle, caption, lyrics, lyricsStyle, customAr, autoAspect: false, stretch: false });
+            cleanupCompose(result);
+            const tmpOut = `/tmp/capcut-render-${Date.now()}.mp4`;
+            fs.writeFileSync(tmpOut, editResult.videoBuffer);
+            const sizeMB = (editResult.videoBuffer.length / 1024 / 1024).toFixed(1);
+            const durStr = editResult.totalDurationSec.toFixed(1);
+            const DISCORD_LIMIT = 25 * 1024 * 1024;
+            if (editResult.videoBuffer.length > DISCORD_LIMIT) {
+              let videoUrl;
+              try {
+                const gdrive = require("./google-drive");
+                const folderId = process.env.GDRIVE_MEDIA_FOLDER_ID || process.env.GDRIVE_FOLDER_ID || "";
+                const driveResult = await gdrive.uploadToDrive(tmpOut, "video/mp4", `capcut-${preset}-${Date.now()}.mp4`, folderId);
+                videoUrl = driveResult.webViewLink;
+              } catch (uploadErr) {
+                console.warn("[capcut] GDrive failed:", uploadErr.message);
+                try { videoUrl = await getPublicMediaUrl(editResult.videoBuffer, "video/mp4"); } catch { videoUrl = null; }
+              }
+              try { fs.unlinkSync(tmpOut); } catch { /* cleanup */ }
+              await interaction.editReply({ content: `🎬 **CapCut Rendered** — ${durStr}s ${preset} *(${effectiveStyle}, ${sizeMB}MB)* — ${info}\n${videoUrl || "⚠️ Too large to upload"}` });
+            } else {
+              await interaction.editReply({
+                content: `🎬 **CapCut Rendered** — ${durStr}s ${preset} *(${effectiveStyle}, ${sizeMB}MB)* — ${info}`,
+                files: [new AttachmentBuilder(tmpOut, { name: `capcut-${preset}.mp4` })],
+              });
+              try { fs.unlinkSync(tmpOut); } catch { /* cleanup */ }
+            }
+            lastVideoBuffer = editResult.videoBuffer; lastVideoSetAt = Date.now();
+            lastVideoMime = "video/mp4";
+            generationContext.set(interaction.id, { type: "video", videoBuf: editResult.videoBuffer, prompt: caption || `${preset} ${style} capcut` });
+          } catch (renderErr) {
+            cleanupCompose(result);
+            console.error("[capcut] render failed:", renderErr.message);
+            await interaction.editReply(`🎬 **CapCut Draft Created** — ${info}\n⚠️ Render failed: ${renderErr.message.slice(0, 200)}\n📋 Draft ID: \`${result.draftId}\``);
+            generationContext.set(interaction.id, { type: "capcut", draftUrl: result.draftUrl, prompt: caption || `${preset} ${style} capcut` });
           }
         } else {
-          // Draft-only mode
           cleanupCompose(result);
           await interaction.editReply(`🎬 **CapCut Draft Created** — ${info}\n📋 Draft: \`${result.draftId}\`\nOpen CapCut Desktop to preview and export.`);
+          generationContext.set(interaction.id, { type: "capcut", draftUrl: result.draftUrl, prompt: caption || `${preset} ${style} capcut` });
         }
-
-        generationContext.set(interaction.id, { type: "capcut", draftUrl: result.draftUrl, prompt: caption || `${preset} ${style} capcut` });
       } catch (e) {
         console.error("[capcut] failed:", e);
         reportGenEvent({ type: GenType.CAPCUT_COMPOSE, status: GenStatus.ERROR, error: e, userId: interaction.user?.id, userName: interaction.user?.username, context: { preset, style, beattrack, lyrics, renderMode } });
@@ -5550,6 +5646,7 @@ async function _submitAndWait(type, payload, timeoutMs = 30000) {
   }
 }
 
+// eslint-disable-next-line complexity
 client.on("messageCreate", async (msg) => {
   // Allow bot messages prefixed with [CLAUDE_QUERY] — these are from the swarm orchestrator
   const isClaudeQuery = msg.author.bot && msg.content?.startsWith("[CLAUDE_QUERY]");
@@ -5839,7 +5936,8 @@ client.on("messageCreate", async (msg) => {
       else if (LYRICS_STYLES.includes(lower)) { lyrics = true; lyricsStyle = lower; }
       else if (lower === "beattrack" || lower === "beat" || lower === "beats") beattrack = true;
       else if (lower === "stretch") _stretch = true;
-      else if (lower === "render:desktop" || lower === "desktop") renderMode = "desktop";
+      else if (lower === "render") renderMode = "render";
+      else if (lower === "desktop" || lower === "render:desktop") renderMode = "desktop";
       else if (lower === "render:draft" || lower === "draft") renderMode = "draft";
       else if (/^\d+:\d+$/.test(lower)) customAr = lower;
       else captionParts.push(arg);
@@ -5890,21 +5988,102 @@ client.on("messageCreate", async (msg) => {
       ].filter(Boolean).join(" | ");
 
       if (renderMode === "desktop") {
+        // ── CapCut Desktop render — real effects ──
         try {
+          await progressMsg.edit(`🎬 **CapCut** draft ready — ${info}\n⏳ Exporting via CapCut Desktop... (up to 5 min)`);
           const { exportViaDesktop } = require("./lib/capcut-desktop-export");
-          const exportResult = await exportViaDesktop(result.draftUrl, result.fileServer?.url, result.tmpDir);
+          const fileServerUrl = result.fileServer?.url || `http://host.docker.internal:${result.fileServer?.port || 0}`;
+          const ts = new Date().toISOString().slice(0, 16).replace("T", "_").replace(/:/g, "-");
+          const draftName = `${style}-${preset}-${ts}`;
+          const desktopResult = await exportViaDesktop(result.draftUrl, fileServerUrl, result.tmpDir, { exportTimeoutMs: 300000, draftName });
           cleanupCompose(result);
-          await progressMsg.edit(`🎬 **CapCut Draft Exported** — ${info}\n✅ ${exportResult.message}\n📁 Draft ID: \`${exportResult.draftId}\``);
-        } catch (exportErr) {
+
+          if (!desktopResult.success || !desktopResult.filePath) {
+            const dlWin = desktopResult.downloadsPath ? `\n📁 Downloads: \`CapCut-Drafts\\${desktopResult.friendlyName}\`` : "";
+            await progressMsg.edit(`🎬 **CapCut Draft Created** — ${info}\n⚠️ Desktop export: ${desktopResult.message}${dlWin}\n📋 Named: \`${desktopResult.friendlyName || result.draftId}\``);
+            generationContext.set(progressMsg.id, { type: "capcut", draftUrl: result.draftUrl, prompt: caption || `${preset} ${style} capcut` });
+            return;
+          }
+
+          const videoBuffer = fs.readFileSync(desktopResult.filePath);
+          const sizeMB = (videoBuffer.length / 1024 / 1024).toFixed(1);
+          const DISCORD_LIMIT = 25 * 1024 * 1024;
+
+          if (videoBuffer.length > DISCORD_LIMIT) {
+            let videoUrl;
+            try {
+              const gdrive = require("./google-drive");
+              const folderId = process.env.GDRIVE_MEDIA_FOLDER_ID || process.env.GDRIVE_FOLDER_ID || "";
+              const driveResult = await gdrive.uploadToDrive(desktopResult.filePath, "video/mp4", `capcut-desktop-${preset}-${Date.now()}.mp4`, folderId);
+              videoUrl = driveResult.webViewLink;
+            } catch (uploadErr) {
+              console.warn("[!capcut] GDrive failed:", uploadErr.message);
+              try { videoUrl = await getPublicMediaUrl(videoBuffer, "video/mp4"); } catch { videoUrl = null; }
+            }
+            await progressMsg.edit({ content: `🎬 **CapCut Desktop** — ${preset} *(${style}, ${sizeMB}MB)* — ${info}\n${videoUrl || "⚠️ Too large for Discord"}`, components: videoButtons(progressMsg.id) });
+          } else {
+            await progressMsg.edit({
+              content: `🎬 **CapCut Desktop** — ${preset} *(${style}, ${sizeMB}MB)* — ${info}`,
+              files: [new AttachmentBuilder(desktopResult.filePath, { name: `capcut-${preset}.mp4` })],
+              components: videoButtons(progressMsg.id),
+            });
+          }
+          lastVideoBuffer = videoBuffer; lastVideoSetAt = Date.now();
+          lastVideoMime = "video/mp4";
+          generationContext.set(progressMsg.id, { type: "video", videoBuf: videoBuffer, prompt: caption || `${preset} ${style} capcut` });
+        } catch (desktopErr) {
           cleanupCompose(result);
-          await progressMsg.edit(`🎬 **CapCut Draft Created** — ${info}\n⚠️ Desktop export failed: ${exportErr.message}\n📋 Draft URL: \`${result.draftUrl}\`\nOpen CapCut Desktop to render manually.`);
+          console.error("[!capcut] desktop export failed:", desktopErr.message);
+          await progressMsg.edit(`🎬 **CapCut Draft Created** — ${info}\n⚠️ Desktop export failed: ${desktopErr.message.slice(0, 200)}\n📋 Draft ID: \`${result.draftId}\``);
+          generationContext.set(progressMsg.id, { type: "capcut", draftUrl: result.draftUrl, prompt: caption || `${preset} ${style} capcut` });
+        }
+      } else if (renderMode === "render") {
+        // ── FFmpeg render — approximated effects ──
+        try {
+          await progressMsg.edit(`🎬 **CapCut** draft ready — ${info}\n⏳ Rendering with FFmpeg...`);
+          const { editVideo } = require("./lib/video-editor");
+          const editResult = await editVideo({ images, videos, audioBuffer: audios[0] || null, preset, style, caption, lyrics, lyricsStyle, customAr, autoAspect: false, stretch: _stretch });
+          cleanupCompose(result);
+          const tmpOut = `/tmp/capcut-render-${Date.now()}.mp4`;
+          fs.writeFileSync(tmpOut, editResult.videoBuffer);
+          const sizeMB = (editResult.videoBuffer.length / 1024 / 1024).toFixed(1);
+          const durStr = editResult.totalDurationSec.toFixed(1);
+          const DISCORD_LIMIT = 25 * 1024 * 1024;
+          if (editResult.videoBuffer.length > DISCORD_LIMIT) {
+            let videoUrl;
+            try {
+              const gdrive = require("./google-drive");
+              const folderId = process.env.GDRIVE_MEDIA_FOLDER_ID || process.env.GDRIVE_FOLDER_ID || "";
+              const driveResult = await gdrive.uploadToDrive(tmpOut, "video/mp4", `capcut-${preset}-${Date.now()}.mp4`, folderId);
+              videoUrl = driveResult.webViewLink;
+            } catch (uploadErr) {
+              console.warn("[!capcut] GDrive failed:", uploadErr.message);
+              try { videoUrl = await getPublicMediaUrl(editResult.videoBuffer, "video/mp4"); } catch { videoUrl = null; }
+            }
+            try { fs.unlinkSync(tmpOut); } catch { /* cleanup */ }
+            await progressMsg.edit({ content: `🎬 **CapCut Rendered** — ${durStr}s ${preset} *(${style}, ${sizeMB}MB)* — ${info}\n${videoUrl || "⚠️ Too large to upload"}`, components: videoButtons(progressMsg.id) });
+          } else {
+            await progressMsg.edit({
+              content: `🎬 **CapCut Rendered** — ${durStr}s ${preset} *(${style}, ${sizeMB}MB)* — ${info}`,
+              files: [new AttachmentBuilder(tmpOut, { name: `capcut-${preset}.mp4` })],
+              components: videoButtons(progressMsg.id),
+            });
+            try { fs.unlinkSync(tmpOut); } catch { /* cleanup */ }
+          }
+          lastVideoBuffer = editResult.videoBuffer; lastVideoSetAt = Date.now();
+          lastVideoMime = "video/mp4";
+          generationContext.set(progressMsg.id, { type: "video", videoBuf: editResult.videoBuffer, prompt: caption || `${preset} ${style} capcut` });
+        } catch (renderErr) {
+          cleanupCompose(result);
+          console.error("[!capcut] render failed:", renderErr.message);
+          await progressMsg.edit(`🎬 **CapCut Draft Created** — ${info}\n⚠️ Render failed: ${renderErr.message.slice(0, 200)}\n📋 Draft ID: \`${result.draftId}\``);
+          generationContext.set(progressMsg.id, { type: "capcut", draftUrl: result.draftUrl, prompt: caption || `${preset} ${style} capcut` });
         }
       } else {
         cleanupCompose(result);
         await progressMsg.edit(`🎬 **CapCut Draft Created** — ${info}\n📋 Draft: \`${result.draftId}\`\nOpen CapCut Desktop to preview and export.`);
+        generationContext.set(progressMsg.id, { type: "capcut", draftUrl: result.draftUrl, prompt: caption || `${preset} ${style} capcut` });
       }
-
-      generationContext.set(progressMsg.id, { type: "capcut", draftUrl: result.draftUrl, prompt: caption || `${preset} ${style} capcut` });
     } catch (e) {
       console.error("[!capcut] failed:", e);
       reportGenEvent({ type: GenType.CAPCUT_COMPOSE, status: GenStatus.ERROR, error: e, userId: msg.author?.id, userName: msg.author?.username, context: { preset, style, beattrack, lyrics, renderMode } });
@@ -6177,6 +6356,37 @@ client.on("messageCreate", async (msg) => {
       reportGenEvent({ type: GenType.GROK_IMAGE, status: GenStatus.ERROR, error: e, userId: msg.author?.id, userName: msg.author?.username, context: { prompt, model: "grok-aurora" } });
       await msg.reply(`⚠️ Grok error: ${e.message.slice(0, 200)}`);
     }
+    return;
+  }
+
+  // ── !workshop — autonomous agent webpage builder ───────────────
+  // !workshop weirdbox 20m       → continue improving existing weirdbox
+  // !workshop new space-rpg 10m  → start a brand new build from scratch
+  const lower = msg.content.toLowerCase();
+  if (lower.startsWith("!workshop")) {
+    const args = msg.content.slice(9).trim();
+    const isNew = /\bnew\b/i.test(args);
+    const cleaned = args.replace(/\bnew\b/i, "").trim();
+    const durationMatch = cleaned.match(/(\d+)\s*(m|min|h|hr)/i);
+    const budgetMs = durationMatch
+      ? (durationMatch[2].startsWith("h") ? parseInt(durationMatch[1]) * 3600000 : parseInt(durationMatch[1]) * 60000)
+      : 1200000; // default 20 min
+    const topic = cleaned.replace(/\d+\s*(m|min|h|hr)/i, "").trim() || "freestyle";
+
+    const spawnArgs = [
+      path.join(__dirname, "workshop-builder.js"),
+      "--topic", topic,
+      "--budget", String(budgetMs),
+      "--user", msg.author.username,
+      "--channel", msg.channelId,
+    ];
+    if (isNew) spawnArgs.push("--new");
+
+    const child = require("child_process").spawn("node", spawnArgs, { detached: true, stdio: "ignore" });
+    child.unref();
+
+    const mode = isNew ? "NEW build" : "continuing";
+    await msg.reply(`🔨 **Workshop ${mode}:** "${topic}" (${budgetMs / 60000}min)\nWatch live: https://drivenemo.web.app/workshop`);
     return;
   }
 

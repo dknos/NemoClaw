@@ -285,7 +285,8 @@ const commands = [
     .addBooleanOption(o => o.setName("beattrack").setDescription("Sync cuts to detected beats"))
     .addStringOption(o => o.setName("render").setDescription("Render mode")
       .addChoices(
-        { name: "CapCut Desktop (best quality)", value: "desktop" },
+        { name: "CapCut Desktop (real effects)", value: "desktop" },
+        { name: "FFmpeg (fast, approximate)", value: "render" },
         { name: "Draft only (open in CapCut)", value: "draft" },
       ))
     .addStringOption(o => o.setName("caption").setDescription("Text overlay"))

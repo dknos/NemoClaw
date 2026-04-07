@@ -47,6 +47,7 @@ async function videoInfos({ videoUrls, timelines, transition = null, transitionD
   return r.infos; // JSON string
 }
 
+// eslint-disable-next-line complexity
 async function imgsInfos({ imgs, timelines, width = null, height = null, inAnimation = null, inAnimationDuration = null, outAnimation = null, outAnimationDuration = null, loopAnimation = null, loopAnimationDuration = null, transition = null, transitionDuration = null }) {
   const body = { imgs, timelines };
   if (width) body.width = width;
@@ -150,6 +151,7 @@ async function getAudioDuration(mp3Url) {
 // Creates a CapCut draft with cuts aligned to detected beats.
 // Requires beat-detect.js for audio analysis.
 
+// eslint-disable-next-line complexity
 async function createBeatSyncedDraft({
   audioUrl,        // URL to mp3 (accessible from CapCut container)
   audioPath,       // Local path to mp3 (for beat detection)
@@ -214,7 +216,8 @@ async function createBeatSyncedDraft({
   // 7. Add caption if provided
   if (caption) {
     const captionInfoStr = await capcutPost("/caption_infos", {
-      captions: [{ text: caption, start: 0, end: Math.min(4_000_000, totalUs) }],
+      texts: [caption],
+      timelines: [{ start: 0, end: Math.min(4_000_000, totalUs) }],
     });
     result = await addCaptions(result.draftUrl, captionInfoStr.infos, {
       fontSize: 48, bold: true, textColor: "#FFFFFF",
@@ -233,7 +236,7 @@ async function createBeatSyncedDraft({
           end: Math.round((p.time + 0.3) * 1_000_000),
         }));
         const effectStr = await capcutPost("/effect_infos", {
-          effect_id: flashEffect.id || flashEffect.effect_id,
+          effects: [flashEffect.name || flashEffect.title || "CCD闪光"],
           timelines: peakTimelines,
         });
         if (effectStr.infos) {

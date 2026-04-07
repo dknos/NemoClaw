@@ -56,64 +56,6 @@ const STYLE_MAP = {
 // Shockwave, Flash Shake, Vibration, Pixel Shock, Negative Flicker
 const BEAT_EFFECT_NAMES = ["CCD闪光", "抖动", "RGB描边", "定格闪烁", "X-Signal", "故障", "色差故障", "冲击波", "闪光震动", "震动", "像素震闪", "负片闪烁"];
 
-// ── Effect/Filter catalog cache ─────────────────────────────────────────────
-
-let effectCatalog = null;
-let filterCatalog = null;
-
-async function loadEffectCatalog() {
-  if (effectCatalog) return effectCatalog;
-  try {
-    const effects = await cc.getEffects(2);
-    effectCatalog = new Map();
-    if (Array.isArray(effects)) {
-      for (const e of effects) {
-        const name = e.name || e.title || "";
-        const id = e.id || e.effect_id || e.resource_id;
-        if (name && id) effectCatalog.set(name, id);
-      }
-    }
-    console.log(`[capcut-compose] loaded ${effectCatalog.size} effects`);
-  } catch (e) {
-    console.warn("[capcut-compose] failed to load effects:", e.message);
-    effectCatalog = new Map();
-  }
-  return effectCatalog;
-}
-
-async function loadFilterCatalog() {
-  if (filterCatalog) return filterCatalog;
-  try {
-    const filters = await cc.getFilters(2);
-    filterCatalog = new Map();
-    if (Array.isArray(filters)) {
-      for (const f of filters) {
-        const name = f.name || f.title || "";
-        const id = f.id || f.filter_id || f.resource_id;
-        if (name && id) filterCatalog.set(name, id);
-      }
-    }
-    console.log(`[capcut-compose] loaded ${filterCatalog.size} filters`);
-  } catch (e) {
-    console.warn("[capcut-compose] failed to load filters:", e.message);
-    filterCatalog = new Map();
-  }
-  return filterCatalog;
-}
-
-function findInCatalog(catalog, name) {
-  if (!catalog) return null;
-  if (catalog.has(name)) return catalog.get(name);
-  const lower = name.toLowerCase();
-  for (const [k, v] of catalog) {
-    if (k.toLowerCase().includes(lower)) return v;
-  }
-  return null;
-}
-
-function findEffectId(name) { return findInCatalog(effectCatalog, name); }
-function findFilterId(name) { return findInCatalog(filterCatalog, name); }
-
 // ── Audio analysis helpers ──────────────────────────────────────────────────
 
 async function analyzeAudio(audioPath, tmpDir, targetSec, lyrics, beattrack) {
@@ -238,14 +180,13 @@ async function addAudioTrack(draft, audioUrl, totalUs) {
 async function addStyleFilter(draft, styleCfg, totalUs) {
   if (styleCfg.filterNames.length === 0) return draft;
   try {
-    const filterId = findFilterId(styleCfg.filterNames[0]);
-    if (!filterId) return draft;
     const filterInfoStr = await cc.capcutPost("/filter_infos", {
-      filter_id: filterId, timelines: [{ start: 0, end: totalUs }],
+      filters: styleCfg.filterNames,
+      timelines: [{ start: 0, end: totalUs }],
     });
     if (filterInfoStr.infos) {
       const result = await cc.addFilters(draft, filterInfoStr.infos);
-      console.log(`[capcut-compose] applied filter: ${styleCfg.filterNames[0]}`);
+      console.log(`[capcut-compose] applied filter: ${styleCfg.filterNames.join(", ")}`);
       return result.draftUrl;
     }
   } catch (e) {
@@ -273,50 +214,49 @@ function distributePeaks(beats, videoEndSec) {
 
 async function addBeatEffects(draft, beats, totalUs) {
   const peakTimes = distributePeaks(beats, totalUs / 1_000_000);
-  const effectsToApply = BEAT_EFFECT_NAMES.map(n => ({ name: n, id: findEffectId(n) })).filter(e => e.id);
-  if (effectsToApply.length === 0) return draft;
+  if (BEAT_EFFECT_NAMES.length === 0 || peakTimes.length === 0) return draft;
 
   let current = draft;
   const count = Math.min(peakTimes.length, 15);
+  let added = 0;
   for (let i = 0; i < count; i++) {
-    const effect = effectsToApply[i % effectsToApply.length];
+    const effectName = BEAT_EFFECT_NAMES[i % BEAT_EFFECT_NAMES.length];
     const peakUs = Math.round(peakTimes[i] * 1_000_000);
     try {
       const effectStr = await cc.capcutPost("/effect_infos", {
-        effect_id: effect.id,
+        effects: [effectName],
         timelines: [{ start: peakUs, end: Math.min(peakUs + 300000, totalUs) }],
       });
       if (effectStr.infos) {
         const result = await cc.addEffects(current, effectStr.infos);
         current = result.draftUrl;
+        added++;
       }
     } catch (e) {
-      console.warn(`[capcut-compose] beat effect ${effect.name} failed:`, e.message);
+      console.warn(`[capcut-compose] beat effect ${effectName} failed:`, e.message);
     }
   }
-  console.log(`[capcut-compose] added ${count} beat effects`);
+  console.log(`[capcut-compose] added ${added}/${count} beat effects`);
   return current;
 }
 
 async function addStyleEffects(draft, styleCfg, totalUs) {
-  let current = draft;
-  for (const effectName of styleCfg.effectNames) {
-    try {
-      const effectId = findEffectId(effectName);
-      if (!effectId) continue;
-      const effectStr = await cc.capcutPost("/effect_infos", {
-        effect_id: effectId, timelines: [{ start: 0, end: totalUs }],
-      });
-      if (effectStr.infos) {
-        const result = await cc.addEffects(current, effectStr.infos);
-        current = result.draftUrl;
-        console.log(`[capcut-compose] applied effect: ${effectName}`);
-      }
-    } catch (e) {
-      console.warn(`[capcut-compose] effect ${effectName} failed:`, e.message);
+  if (styleCfg.effectNames.length === 0) return draft;
+  // Batch all style effects into one call — API takes an array of names
+  try {
+    const effectStr = await cc.capcutPost("/effect_infos", {
+      effects: styleCfg.effectNames,
+      timelines: [{ start: 0, end: totalUs }],
+    });
+    if (effectStr.infos) {
+      const result = await cc.addEffects(draft, effectStr.infos);
+      console.log(`[capcut-compose] applied effects: ${styleCfg.effectNames.join(", ")}`);
+      return result.draftUrl;
     }
+  } catch (e) {
+    console.warn(`[capcut-compose] effects failed:`, e.message);
   }
-  return current;
+  return draft;
 }
 
 // ── Caption / lyrics ────────────────────────────────────────────────────────
@@ -324,7 +264,8 @@ async function addStyleEffects(draft, styleCfg, totalUs) {
 async function addCaptionOverlay(draft, caption, totalUs) {
   try {
     const captionInfoStr = await cc.capcutPost("/caption_infos", {
-      captions: [{ text: caption, start: 0, end: Math.min(4_000_000, totalUs) }],
+      texts: [caption],
+      timelines: [{ start: 0, end: Math.min(4_000_000, totalUs) }],
     });
     if (captionInfoStr.infos) {
       const result = await cc.addCaptions(draft, captionInfoStr.infos, {
@@ -371,7 +312,9 @@ async function addLyricsCaptions(draft, transcript, lyricsStyle) {
     const captions = buildLyricsCaptions(transcript, lyricsStyle);
     if (captions.length === 0) return draft;
 
-    const captionInfoStr = await cc.capcutPost("/caption_infos", { captions });
+    const texts = captions.map(c => c.text);
+    const timelines = captions.map(c => ({ start: c.start, end: c.end }));
+    const captionInfoStr = await cc.capcutPost("/caption_infos", { texts, timelines });
     if (captionInfoStr.infos) {
       const result = await cc.addCaptions(draft, captionInfoStr.infos, {
         fontSize: lyricsStyle === "viral" ? 72 : 36,
@@ -491,8 +434,6 @@ async function capcutCompose(opts) {
     const analysis = audioPath
       ? await analyzeAudio(audioPath, tmpDir, targetSec, lyrics, beattrack)
       : { beats: null, transcript: null, audioDurUs: 0 };
-
-    await Promise.all([loadEffectCatalog(), loadFilterCatalog()]);
 
     const { draftUrl } = await cc.createDraft(w, h);
     const totalUs = computeTotalUs(audioBuffer, analysis.audioDurUs, targetSec);
