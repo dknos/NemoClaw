@@ -227,12 +227,11 @@ function checkLogs() {
 // 9. API endpoint liveness (lightweight, localhost only)
 function checkAPIs() {
   const problems = [];
-  // Check grok-server (should be on :7700)
+  // Check grok-server (should be on :3091)
   try {
-    execSync('curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:7700/health 2>/dev/null', { timeout: 5000 });
-  } catch {
-    problems.push("grok-server not responding on :7700");
-  }
+    const grokCode = execSync('curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:3091/health 2>/dev/null', { timeout: 5000 }).toString().trim();
+    if (grokCode === "000") problems.push("grok-server not responding on :3091");
+  } catch { /* ignore */ }
   // Check MaoMao reaction server (should be on :7702)
   try {
     execSync('curl -s -o /dev/null -w "%{http_code}" --max-time 2 http://127.0.0.1:7702/ 2>/dev/null', { timeout: 4000 });
