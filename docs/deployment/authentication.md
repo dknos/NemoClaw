@@ -22,6 +22,8 @@ status: published
 
 # Authentication Configuration
 
+This page documents the device authentication settings for the OpenClaw gateway, including the `NEMOCLAW_DISABLE_DEVICE_AUTH` build argument and related security controls.
+
 ## `NEMOCLAW_DISABLE_DEVICE_AUTH`
 
 **Location**: Dockerfile build argument (line 59), propagated to `openclaw.json` as `dangerouslyDisableDeviceAuth`
@@ -79,7 +81,7 @@ Combined with a cloudflared tunnel or LAN-bind changes in remote deployments, th
 `trustedProxies`
 : IPs allowed to set `X-Forwarded-For` headers. Defaults to `127.0.0.1` and `::1`.
 
-## Related Topics
+## Next Steps
 
 - [Security Best Practices](../security/best-practices.md) for the full gateway authentication controls reference.
 - [Sandbox Hardening](sandbox-hardening.md) for container-level security measures.
