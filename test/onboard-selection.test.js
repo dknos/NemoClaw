@@ -2124,7 +2124,7 @@ printf '%s' "$status"
 const credentials = require(${credentialsPath});
 const runner = require(${runnerPath});
 
-const answers = ["", "", "retry", "nvapi-good"];
+const answers = ["", "", "retry", "nvapi-TEST-GOOD-NOT-REAL-000000"];
 const messages = [];
 const prompts = [];
 
@@ -2171,8 +2171,8 @@ const { setupNim } = require(${onboardPath});
     assert.equal(result.status, 0, result.stderr);
     const payload = JSON.parse(result.stdout.trim());
     assert.equal(payload.result.provider, "nvidia-prod");
-    assert.equal(payload.result.preferredInferenceApi, "openai-completions");
-    assert.equal(payload.key, "nvapi-good");
+    assert.equal(payload.result.preferredInferenceApi, "openai-responses");
+    assert.equal(payload.key, "nvapi-TEST-GOOD-NOT-REAL-000000");
     assert.ok(payload.lines.some((line) => line.includes("NVIDIA Endpoints authorization failed")));
     assert.equal(payload.messages.filter((message) => /Choose \[/.test(message)).length, 1);
     assert.equal(
