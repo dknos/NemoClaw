@@ -744,7 +744,9 @@ Output ONLY the complete HTML document, from <!DOCTYPE html> to </html>.`;
         try {
           const overlayFile = path.join(process.env.HOME, "netify-dev", "public", "data", "stream-overlay.json");
           let cur = { base: { visible: true, text: "chat is cool", accent: "#00f5d4" }, flash: null };
-          try { cur = JSON.parse(fs.readFileSync(overlayFile, "utf8")) || cur; } catch (_e) {}
+          try { cur = JSON.parse(fs.readFileSync(overlayFile, "utf8")) || cur; } catch (_e) {
+            /* overlay missing or corrupted */
+          }
           cur.flash = {
             visible: true,
             text:    `🎤 weaving in ${fresh.length} chat note${fresh.length === 1 ? "" : "s"}`,

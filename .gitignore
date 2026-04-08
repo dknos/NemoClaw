@@ -23,6 +23,9 @@ research/
 specs/
 vdr-notes/
 
+# Claude Code workspace
+.claude/worktrees/
+
 # Security: secrets, credentials, and keys
 *_ecdsa
 *_ed25519

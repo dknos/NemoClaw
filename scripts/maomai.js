@@ -70,111 +70,120 @@ require("http").createServer(async (req, res) => {
   });
 }).listen(7702, "127.0.0.1", () => console.log("[maomai] reaction server on :7702"));
 
+// ── Command dispatch table (prefix → handler) ──────────────────────────────
+const PREFIX_COMMANDS = [
+  { prefix: "!odds ",     handler: (msg, args) => handleOddsQuery(msg, args) },
+  { prefix: "!validate ", handler: (msg, args) => handleValidateQuery(msg, args) },
+  { prefix: "!drop ",     handler: (msg, args) => handleDropQuery(msg, args) },
+  { prefix: "!result ",   handler: (msg, args) => handleResultQuery(msg, args) },
+  { prefix: "!generrors", handler: (msg, args) => handleGenErrors(msg, args.trim()) },
+];
+
+// Try to match a prefixed command; return true if handled.
+function tryDispatchCommand(msg, userMsg) {
+  if (userMsg === "!genstat" || userMsg === "!genstats") {
+    handleGenStats(msg);
+    return true;
+  }
+  for (const cmd of PREFIX_COMMANDS) {
+    if (userMsg.startsWith(cmd.prefix)) {
+      cmd.handler(msg, userMsg.slice(cmd.prefix.length));
+      return true;
+    }
+  }
+  return false;
+}
+
+// Single POST to the Qdrant memory bridge; returns null on any failure.
+function memorySearchRequest(body) {
+  return fetch("http://localhost:7338", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then(r => r.json()).catch(() => null);
+}
+
+// Pull user-specific + global memories, dedupe by id, return top 5 by score.
+async function recallMemories(userMsg, userId) {
+  try {
+    const [userMemRes, globalMemRes] = await Promise.all([
+      memorySearchRequest({ cmd: "search", query: userMsg, userId, limit: 3 }),
+      memorySearchRequest({ cmd: "search", query: userMsg, limit: 3 }),
+    ]);
+    const allMems = [...(userMemRes?.results || []), ...(globalMemRes?.results || [])];
+    const seen = new Set();
+    const unique = allMems.filter(m => { if (seen.has(m.id)) return false; seen.add(m.id); return true; });
+    unique.sort((a, b) => b.score - a.score);
+    return unique.slice(0, 5);
+  } catch {
+    return [];
+  }
+}
+
+function formatMemoryContext(topMems, username) {
+  if (!topMems.length) return "";
+  return `[Crew memory context for @${username}:\n` +
+    topMems.map(m => `- [${m.source || "maomai"}] ${m.text}`).join("\n") + "]\n";
+}
+
+// Extract [REMEMBER: ...] tokens from the LLM reply, persist them to Qdrant,
+// and return the reply with the tokens stripped.
+function persistAndStripRememberTokens(reply, userId) {
+  const matches = [...reply.matchAll(/\[REMEMBER:\s*([\s\S]*?)\]/gi)];
+  for (const match of matches) {
+    const text = match[1].trim();
+    fetch("http://localhost:7338", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: "store", text, userId, source: "maomai" }),
+    }).then(d => d.json())
+      .then(d => console.log(`[maomai-memory] stored: "${text.slice(0, 60)}" → id ${d.stored}`))
+      .catch(e => console.warn("[maomai-memory] store failed:", e.message));
+  }
+  return reply.replace(/\[REMEMBER:\s*[\s\S]*?\]/gi, "").trim();
+}
+
+// Full conversational flow: recall memory → DeepSeek → store → reply in chunks.
+async function handleConversation(msg, userMsg) {
+  await msg.channel.sendTyping();
+  try {
+    const topMems = await recallMemories(userMsg, msg.author.id);
+    const memoryContext = formatMemoryContext(topMems, msg.author.username);
+    const prompt = memoryContext + `[Discord User: @${msg.author.username}]\n` + userMsg;
+
+    const response = await callDeepSeek(prompt);
+    if (!response || !response.trim()) {
+      await msg.reply({ content: "⚠️ DeepSeek is busy right now, try again in a sec.", allowedMentions: { repliedUser: false } });
+      return;
+    }
+
+    const botReply = persistAndStripRememberTokens(response, msg.author.id);
+    const chunks = botReply.match(/[\s\S]{1,2000}/g) || [botReply];
+    for (const chunk of chunks) {
+      await msg.reply({ content: chunk, allowedMentions: { repliedUser: false } });
+    }
+  } catch (err) {
+    console.error("[maomai] chat error:", err.message);
+    await msg.reply({ content: `❌ ${err.message.slice(0, 100)}`, allowedMentions: { repliedUser: false } });
+  }
+}
+
 client.on("messageCreate", async (msg) => {
   if (msg.author.bot) return;
 
   const inAllowedChannel = ALLOWED_CHANNEL_IDS.length === 0 || ALLOWED_CHANNEL_IDS.includes(msg.channelId);
   const inAllowedGuild = !DISCORD_GUILD_ID || msg.guildId === DISCORD_GUILD_ID;
-
   if (!inAllowedChannel || !inAllowedGuild) return;
 
   const userMsg = msg.content.trim();
   if (!userMsg) return;
 
-  // Check if mentioned
+  if (tryDispatchCommand(msg, userMsg)) return;
+
   const isMentioned = msg.mentions.has(client.user.id);
+  if (!isMentioned && !/\b(maomai|maomao)\b/i.test(userMsg)) return;
 
-  // Parse commands
-  if (userMsg.startsWith("!odds ")) {
-    handleOddsQuery(msg, userMsg.slice(6));
-    return;
-  }
-
-  if (userMsg.startsWith("!validate ")) {
-    handleValidateQuery(msg, userMsg.slice(10));
-    return;
-  }
-
-  if (userMsg.startsWith("!drop ")) {
-    handleDropQuery(msg, userMsg.slice(6));
-    return;
-  }
-
-  if (userMsg.startsWith("!result ")) {
-    handleResultQuery(msg, userMsg.slice(8));
-    return;
-  }
-
-  if (userMsg === "!genstat" || userMsg === "!genstats") {
-    handleGenStats(msg);
-    return;
-  }
-
-  if (userMsg.startsWith("!generrors")) {
-    handleGenErrors(msg, userMsg.slice(10).trim());
-    return;
-  }
-
-  // Respond if mentioned or addressed
-  if (isMentioned || /\b(maomai|maomao)\b/i.test(userMsg)) {
-    await msg.channel.sendTyping();
-    try {
-      // Recall Qdrant memories (user-specific + global, deduped)
-      let memoryContext = "";
-      try {
-        const [userMemRes, globalMemRes] = await Promise.all([
-          fetch("http://localhost:7338", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ cmd: "search", query: userMsg, userId: msg.author.id, limit: 3 }),
-          }).then(r => r.json()).catch(() => null),
-          fetch("http://localhost:7338", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ cmd: "search", query: userMsg, limit: 3 }),
-          }).then(r => r.json()).catch(() => null),
-        ]);
-        const allMems = [...(userMemRes?.results || []), ...(globalMemRes?.results || [])];
-        const seen = new Set();
-        const unique = allMems.filter(m => { if (seen.has(m.id)) return false; seen.add(m.id); return true; });
-        unique.sort((a, b) => b.score - a.score);
-        const topMems = unique.slice(0, 5);
-        if (topMems.length) {
-          memoryContext = `[Crew memory context for @${msg.author.username}:\n` +
-            topMems.map(m => `- [${m.source || "maomai"}] ${m.text}`).join("\n") + "]\n";
-        }
-      } catch { /* ignored */ }
-
-      const response = await callDeepSeek(memoryContext + `[Discord User: @${msg.author.username}]\n` + userMsg);
-      if (!response || !response.trim()) {
-        await msg.reply({ content: "⚠️ DeepSeek is busy right now, try again in a sec.", allowedMentions: { repliedUser: false } });
-        return;
-      }
-
-      // Store [REMEMBER: ...] tokens to Qdrant, strip from reply
-      let botReply = response;
-      const rememberMatches = [...botReply.matchAll(/\[REMEMBER:\s*([\s\S]*?)\]/gi)];
-      for (const match of rememberMatches) {
-        const text = match[1].trim();
-        fetch("http://localhost:7338", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cmd: "store", text, userId: msg.author.id, source: "maomai" }),
-        }).then(d => d.json())
-          .then(d => console.log(`[maomai-memory] stored: "${text.slice(0, 60)}" → id ${d.stored}`))
-          .catch(e => console.warn("[maomai-memory] store failed:", e.message));
-      }
-      botReply = botReply.replace(/\[REMEMBER:\s*[\s\S]*?\]/gi, "").trim();
-
-      const chunks = botReply.match(/[\s\S]{1,2000}/g) || [botReply];
-      for (const chunk of chunks) {
-        await msg.reply({ content: chunk, allowedMentions: { repliedUser: false } });
-      }
-    } catch (err) {
-      console.error("[maomai] chat error:", err.message);
-      await msg.reply({ content: `❌ ${err.message.slice(0, 100)}`, allowedMentions: { repliedUser: false } });
-    }
-  }
+  await handleConversation(msg, userMsg);
 });
 
 /**

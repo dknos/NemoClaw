@@ -112,18 +112,47 @@ async function bootstrap(videoId) {
   return { apiKey, clientVersion: cv, continuation: cont };
 }
 
+// Unwrap both action shapes: top-level addChatItemAction and replayChatItemAction.actions[]
+function extractItemsFromAction(action) {
+  if (action?.addChatItemAction) return [action.addChatItemAction.item];
+  const replay = action?.replayChatItemAction?.actions || [];
+  return replay.map(x => x?.addChatItemAction?.item).filter(Boolean);
+}
+
+// Convert a live-chat renderer item into our normalized message shape, or null.
+function parseMessageItem(item) {
+  const m = item?.liveChatTextMessageRenderer
+         || item?.liveChatPaidMessageRenderer
+         || item?.liveChatPaidStickerRenderer;
+  if (!m) return null;
+  const name = m.authorName?.simpleText || "anon";
+  const runs = m.message?.runs || [];
+  const text = runs.map(r => r.text || r.emoji?.shortcuts?.[0] || "").join("").trim();
+  const id   = m.id;
+  if (!text || !id) return null;
+  const tsUs = Number(m.timestampUsec || 0);
+  const ts   = tsUs ? Math.floor(tsUs / 1000) : Date.now();
+  return { name, text, ts, id };
+}
+
+// Find the next polling cursor across all continuation variants.
+function extractContinuation(lcc) {
+  const next = lcc.continuations?.[0] || {};
+  const wrap = next.invalidationContinuationData
+            || next.timedContinuationData
+            || next.reloadContinuationData
+            || next.liveChatReplayContinuationData;
+  return {
+    nextContinuation: wrap?.continuation,
+    timeoutMs:        Number(wrap?.timeoutMs || 5000),
+  };
+}
+
 // One round of /youtubei/v1/live_chat/get_live_chat. Returns:
 //   { messages: [{name,text,ts}], nextContinuation, timeoutMs }
 async function fetchChat(apiKey, clientVersion, continuation) {
   const reqBody = {
-    context: {
-      client: {
-        clientName:    "WEB",
-        clientVersion: clientVersion,
-        hl:            "en",
-        gl:            "US",
-      },
-    },
+    context: { client: { clientName: "WEB", clientVersion, hl: "en", gl: "US" } },
     continuation,
   };
   const url = `https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key=${apiKey}&prettyPrint=false`;
@@ -132,43 +161,20 @@ async function fetchChat(apiKey, clientVersion, continuation) {
 
   let resp;
   try { resp = JSON.parse(body); }
-  catch (_e) { throw new Error(`get_live_chat non-JSON body: ${body.slice(0, 200)}`); }
+  catch (e) { throw new Error(`get_live_chat non-JSON body: ${body.slice(0, 200)}`, { cause: e }); }
 
   const lcc = resp?.continuationContents?.liveChatContinuation;
   if (!lcc) throw new Error("response missing liveChatContinuation (chat ended?)");
 
-  const actions = lcc.actions || [];
   const messages = [];
-  for (const a of actions) {
-    // Two action shapes: top-level and replayChatItemAction.actions[]
-    const inner = a?.addChatItemAction
-      ? [a.addChatItemAction.item]
-      : (a?.replayChatItemAction?.actions || []).map(x => x?.addChatItemAction?.item).filter(Boolean);
-    for (const item of inner) {
-      const m = item?.liveChatTextMessageRenderer
-             || item?.liveChatPaidMessageRenderer
-             || item?.liveChatPaidStickerRenderer;
-      if (!m) continue;
-      const name = m.authorName?.simpleText || "anon";
-      const runs = m.message?.runs || [];
-      const text = runs.map(r => r.text || r.emoji?.shortcuts?.[0] || "").join("").trim();
-      const id   = m.id;
-      const tsUs = Number(m.timestampUsec || 0);
-      const ts   = tsUs ? Math.floor(tsUs / 1000) : Date.now();
-      if (!text || !id) continue;
-      messages.push({ name, text, ts, id });
+  for (const action of lcc.actions || []) {
+    for (const item of extractItemsFromAction(action)) {
+      const msg = parseMessageItem(item);
+      if (msg) messages.push(msg);
     }
   }
 
-  // Pick the next continuation: invalidationContinuationData has timeoutMs.
-  const next = lcc.continuations?.[0] || {};
-  const wrap = next.invalidationContinuationData
-            || next.timedContinuationData
-            || next.reloadContinuationData
-            || next.liveChatReplayContinuationData;
-  const nextContinuation = wrap?.continuation;
-  const timeoutMs        = Number(wrap?.timeoutMs || 5000);
-  return { messages, nextContinuation, timeoutMs };
+  return { messages, ...extractContinuation(lcc) };
 }
 
 function readSession() {

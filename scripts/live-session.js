@@ -704,10 +704,79 @@ function drainPendingSwarmReply(env, liveChatId) {
   fireSwarmReply(env, liveChatId, sig);
 }
 
+// Classify a non-200 poll response into a backoff decision. Returns a
+// { nextPageToken, pollInterval } object if a backoff is needed, or null if
+// the status is 200 (meaning the caller should process the body normally).
+async function handlePollErrorStatus(status, body, pageToken) {
+  if (status === 403) {
+    if (quota.detectExhaustion(status, body)) {
+      console.error("[live] 403 QUOTA EXHAUSTED — pausing all YouTube API calls until reset");
+      await new Promise(r => setTimeout(r, 10 * 60 * 1000));
+      return { nextPageToken: pageToken, pollInterval: 30_000 };
+    }
+    console.error("[live] 403 — chat unavailable; backing off 5 min");
+    await new Promise(r => setTimeout(r, 5 * 60 * 1000));
+    return { nextPageToken: pageToken, pollInterval: 10_000 };
+  }
+  if (status !== 200) {
+    console.warn(`[live] HTTP ${status} — retrying in 10s`);
+    await new Promise(r => setTimeout(r, 10000));
+    return { nextPageToken: pageToken, pollInterval: 5000 };
+  }
+  return null;
+}
+
+// Fire the "what is this?" explainer if the message qualifies and the
+// cooldown has passed. Returns true if fired (caller should skip the swarm
+// reply to avoid double-posting).
+function maybeFireExplainer(text, authorName, env, liveChatId) {
+  if (!isExplainRequest(text)) return false;
+  if (Date.now() - lastExplainAt <= EXPLAIN_COOLDOWN_MS) return false;
+  lastExplainAt = Date.now();
+  const safeName = authorName.replace(/[^\w\- ]/g, "").slice(0, 16) || "viewer";
+  console.log(`[live] explain request from ${authorName}: "${text.slice(0, 60)}"`);
+  flashOverlay(`@${safeName} asked — explaining...`, "#fde047", 6000);
+  postChatMessage(env, liveChatId, EXPLAIN_MESSAGE).catch(() => {});
+  // Count as a reply for swarm cooldown purposes
+  lastSwarmReplyAt = Date.now();
+  return true;
+}
+
+// Process one accepted chat signal: update history, vote window, overlay,
+// and (optionally) fire the swarm reply.
+function processChatSignal(signal, env, liveChatId, voteWindow, chatHistory, explainFired) {
+  chatHistory.push({ name: signal.authorName, text: signal.text, ts: Date.now() });
+  while (chatHistory.length > CHAT_HISTORY_MAX) chatHistory.shift();
+
+  if (signal.hints && (signal.hints.mood || signal.hints.topic || signal.hints.shoutout)) {
+    voteWindow.add({ ...signal.hints });
+  }
+
+  console.log(`[live] +msg from ${signal.authorName}: "${signal.text.slice(0, 60)}"`);
+  const reaction = reactionFor(signal);
+  flashOverlay(reaction.text, reaction.accent, 7000);
+
+  if (!explainFired) {
+    maybeSwarmReact(env, liveChatId, signal);
+  }
+}
+
+// Handle one raw chat item from the YouTube list response.
+function handleChatItem(item, env, liveChatId, userCooldowns, voteWindow, chatHistory) {
+  const text       = item.snippet?.displayMessage ?? "";
+  const authorId   = item.authorDetails?.channelId ?? "unknown";
+  const authorName = item.authorDetails?.displayName ?? "viewer";
+
+  const explainFired = maybeFireExplainer(text, authorName, env, liveChatId);
+
+  const signal = sanitizeMessage(text, authorId, authorName, userCooldowns);
+  if (!signal) return;
+  processChatSignal(signal, env, liveChatId, voteWindow, chatHistory, explainFired);
+}
+
 // ── Poll one batch of chat messages ──────────────────────────────────────────
 async function pollOnce(env, liveChatId, pageToken, userCooldowns, voteWindow, chatHistory) {
-  // Hard budget gate — never poll if we're out of daily quota. Back off
-  // long so we don't spin. The day key flips at midnight PT and we recover.
+  // Hard budget gate — never poll if we're out of daily quota.
   if (quota.isHardStopped()) {
     const s = quota.status();
     console.warn(`[live] BUDGET STOP: hard-stopped (used ${s.used}/${s.hardStop}) — sleeping 10 min`);
@@ -723,82 +792,20 @@ async function pollOnce(env, liveChatId, pageToken, userCooldowns, voteWindow, c
       `https://www.googleapis.com/youtube/v3/liveChat/messages?${qs}`,
       { "Authorization": `Bearer ${token}` }
     );
-    // Charge the list call regardless of outcome (same reasoning as inserts)
+    // Charge the list call regardless of outcome
     quota.record(quota.COST_LIST_LIVECHAT);
 
-    if (status === 403) {
-      // If this is a quota-exhausted 403, mark the local tracker exhausted
-      // so NOTHING else tries to call YouTube until midnight Pacific.
-      if (quota.detectExhaustion(status, body)) {
-        console.error("[live] 403 QUOTA EXHAUSTED — pausing all YouTube API calls until reset");
-        await new Promise(r => setTimeout(r, 10 * 60 * 1000));
-        return { nextPageToken: pageToken, pollInterval: 30_000 };
-      }
-      // Other 403s (chat disabled, stream ended) — shorter backoff
-      console.error("[live] 403 — chat unavailable; backing off 5 min");
-      await new Promise(r => setTimeout(r, 5 * 60 * 1000));
-      return { nextPageToken: pageToken, pollInterval: 10_000 };
-    }
-    if (status !== 200) {
-      console.warn(`[live] HTTP ${status} — retrying in 10s`);
-      await new Promise(r => setTimeout(r, 10000));
-      return { nextPageToken: pageToken, pollInterval: 5000 };
-    }
+    const errResult = await handlePollErrorStatus(status, body, pageToken);
+    if (errResult) return errResult;
 
     for (const item of (body.items || [])) {
-      const text       = item.snippet?.displayMessage ?? "";
-      const authorId   = item.authorDetails?.channelId ?? "unknown";
-      const authorName = item.authorDetails?.displayName ?? "viewer";
-
-      // ── "What is this?" explainer — rate-limited to once per 90s ──────────
-      // If this fires we SKIP the swarm reply below so we only post one
-      // bot message per chat line (quota preservation + not spammy).
-      let explainFired = false;
-      if (isExplainRequest(text) && Date.now() - lastExplainAt > EXPLAIN_COOLDOWN_MS) {
-        lastExplainAt = Date.now();
-        explainFired = true;
-        const safeName = authorName.replace(/[^\w\- ]/g, "").slice(0, 16) || "viewer";
-        console.log(`[live] explain request from ${authorName}: "${text.slice(0, 60)}"`);
-        flashOverlay(`@${safeName} asked — explaining...`, "#fde047", 6000);
-        postChatMessage(env, liveChatId, EXPLAIN_MESSAGE).catch(() => {});
-        // Count this as a "reply" for swarm cooldown purposes so the next
-        // swarm reaction waits the full cooldown window from now.
-        lastSwarmReplyAt = Date.now();
-      }
-
-      const signal = sanitizeMessage(text, authorId, authorName, userCooldowns);
-      if (signal) {
-        // Push into crowd-work ring buffer for the builder
-        chatHistory.push({
-          name: signal.authorName,
-          text: signal.text,
-          ts:   Date.now(),
-        });
-        while (chatHistory.length > CHAT_HISTORY_MAX) chatHistory.shift();
-
-        // Feed enum hints (if any) to the vote window for legacy influence tallying
-        if (signal.hints && (signal.hints.mood || signal.hints.topic || signal.hints.shoutout)) {
-          voteWindow.add({ ...signal.hints });
-        }
-
-        console.log(`[live] +msg from ${signal.authorName}: "${signal.text.slice(0, 60)}"`);
-        // Real-time on-screen reaction — flashes for ~7s then the swarm reply
-        // (if one is generated) will overwrite it ~1-2s later.
-        const reaction = reactionFor(signal);
-        flashOverlay(reaction.text, reaction.accent, 7000);
-        // Conversational swarm reply — rate-limited, posts to overlay + YT chat.
-        // Skipped when the explain handler already fired to avoid double-posting.
-        if (!explainFired) {
-          maybeSwarmReact(env, liveChatId, signal);
-        }
-      }
+      handleChatItem(item, env, liveChatId, userCooldowns, voteWindow, chatHistory);
     }
 
     return {
       nextPageToken: body.nextPageToken ?? pageToken,
       // Floor at 15s to conserve daily quota (liveChat/messages.list = 5
-      // units per call; 15s floor → 1200 units/hr = ~8hrs of streaming/day
-      // on the 10k unit daily cap, with budget left for inserts.
+      // units per call; 15s floor → 1200 units/hr = ~8hrs of streaming/day).
       pollInterval:  body.pollingIntervalMillis > 0 ? Math.max(body.pollingIntervalMillis, 15_000) : 15_000,
     };
   } catch (err) {
