@@ -53,9 +53,10 @@ npm run typecheck:cli   # or: npx tsc -p tsconfig.cli.json
 
 ### Local Development Testing
 
-After building, link the CLI so the `nemoclaw` command is available locally:
+After building, return to the repository root and link the CLI so the `nemoclaw` command is available locally:
 
 ```bash
+cd /path/to/NemoClaw   # make sure you are in the repo root, not ./nemoclaw
 npm link
 nemoclaw --version  # verify the linked version
 ```
