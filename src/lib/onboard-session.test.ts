@@ -99,7 +99,7 @@ describe("onboard session", () => {
       preferredInferenceApi: "openai-completions",
       nimContainer: "nim-123",
       policyPresets: ["pypi", "npm"],
-      apiKey: "nvapi-secret",
+      apiKey: "nvapi-TEST-NOT-A-REAL-KEY-000000",
       metadata: {
         gatewayName: "nemoclaw",
         token: "secret",
@@ -193,16 +193,16 @@ describe("onboard session", () => {
     session.saveSession(session.createSession());
     session.markStepFailed(
       "inference",
-      "provider auth failed with NVIDIA_API_KEY=nvapi-secret Bearer topsecret sk-secret-value ghp_1234567890123456789012345",
+      "provider auth failed with NVIDIA_API_KEY=nvapi-TEST-NOT-A-REAL-KEY-000000 Bearer topsecret sk-TEST-NOT-A-REAL-KEY ghp_TESTFAKE000000000000000000",
     );
 
     const loaded = session.loadSession();
     expect(loaded.steps.inference.error).toContain("NVIDIA_API_KEY=<REDACTED>");
     expect(loaded.steps.inference.error).toContain("Bearer <REDACTED>");
-    expect(loaded.steps.inference.error).not.toContain("nvapi-secret");
+    expect(loaded.steps.inference.error).not.toContain("nvapi-TEST-NOT-A-REAL-KEY-000000");
     expect(loaded.steps.inference.error).not.toContain("topsecret");
-    expect(loaded.steps.inference.error).not.toContain("sk-secret-value");
-    expect(loaded.steps.inference.error).not.toContain("ghp_1234567890123456789012345");
+    expect(loaded.steps.inference.error).not.toContain("sk-TEST-NOT-A-REAL-KEY");
+    expect(loaded.steps.inference.error).not.toContain("ghp_TESTFAKE000000000000000000");
     expect(loaded.failure.message).toBe(loaded.steps.inference.error);
   });
 

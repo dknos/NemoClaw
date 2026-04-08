@@ -295,7 +295,7 @@ describe("runner", () => {
     });
 
     it("passes credential via subprocess env, not global env", async () => {
-      process.env.MY_API_KEY = "secret-key-123";
+      process.env.MY_API_KEY = "TEST-NOT-A-REAL-KEY-123";
       try {
         await actionApply("default", minimalBlueprint());
 
@@ -304,11 +304,11 @@ describe("runner", () => {
           (c) => Array.isArray(c[1]) && c[1].includes("provider"),
         );
         if (!providerCall) throw new Error("provider create call not found");
-        expect(providerCall[2].env.OPENAI_API_KEY).toBe("secret-key-123");
+        expect(providerCall[2].env.OPENAI_API_KEY).toBe("TEST-NOT-A-REAL-KEY-123");
         // Args pass the env var NAME, not the value
         expect(providerCall[1]).toContain("--credential");
         expect(providerCall[1]).toContain("OPENAI_API_KEY");
-        expect(providerCall[1]).not.toContain("secret-key-123");
+        expect(providerCall[1]).not.toContain("TEST-NOT-A-REAL-KEY-123");
       } finally {
         delete process.env.MY_API_KEY;
       }

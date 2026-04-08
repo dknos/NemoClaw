@@ -494,7 +494,7 @@ runner.runCapture = () => "";
 const { setupNim } = require(${onboardPath});
 
 (async () => {
-  process.env.GEMINI_API_KEY = "gemini-secret";
+  process.env.GEMINI_API_KEY = "gemini-TEST-NOT-A-REAL-KEY";
   const originalLog = console.log;
   const lines = [];
   console.log = (...args) => lines.push(args.join(" "));
@@ -988,7 +988,7 @@ runner.runCapture = () => "";
 const { setupNim } = require(${onboardPath});
 
 (async () => {
-  process.env.OPENAI_API_KEY = "sk-test";
+  process.env.OPENAI_API_KEY = "sk-TEST-NOT-A-REAL-KEY";
   const originalLog = console.log;
   const originalError = console.error;
   const lines = [];
@@ -1071,7 +1071,7 @@ runner.runCapture = () => "";
 const { setupNim } = require(${onboardPath});
 
 (async () => {
-  process.env.ANTHROPIC_API_KEY = "anthropic-test";
+  process.env.ANTHROPIC_API_KEY = "anthropic-TEST-NOT-A-REAL-KEY";
   const originalLog = console.log;
   const originalError = console.error;
   const lines = [];
@@ -1166,7 +1166,7 @@ runner.runCapture = () => "";
 const { setupNim } = require(${onboardPath});
 
 (async () => {
-  process.env.ANTHROPIC_API_KEY = "anthropic-test";
+  process.env.ANTHROPIC_API_KEY = "anthropic-TEST-NOT-A-REAL-KEY";
   const originalLog = console.log;
   const originalError = console.error;
   const lines = [];
@@ -1829,7 +1829,7 @@ runner.runCapture = () => "";
 const { setupNim } = require(${onboardPath});
 
 (async () => {
-  process.env.OPENAI_API_KEY = "sk-test";
+  process.env.OPENAI_API_KEY = "sk-TEST-NOT-A-REAL-KEY";
   const originalLog = console.log;
   const originalError = console.error;
   const lines = [];
@@ -1937,8 +1937,8 @@ runner.runCapture = () => "";
 const { setupNim } = require(${onboardPath});
 
 (async () => {
-  process.env.OPENAI_API_KEY = "sk-test";
-  process.env.GEMINI_API_KEY = "gemini-test";
+  process.env.OPENAI_API_KEY = "sk-TEST-NOT-A-REAL-KEY";
+  process.env.GEMINI_API_KEY = "gemini-TEST-NOT-A-REAL-KEY";
   const originalLog = console.log;
   const originalError = console.error;
   const lines = [];
@@ -2107,10 +2107,10 @@ while [ "$#" -gt 0 ]; do
     *) url="$1"; shift ;;
   esac
 done
-if echo "$auth" | grep -q 'nvapi-good' && echo "$url" | grep -q '/responses$'; then
+if echo "$auth" | grep -q 'nvapi-TEST-GOOD-NOT-REAL-000000' && echo "$url" | grep -q '/responses$'; then
   body='{"id":"resp_123"}'
   status="200"
-elif echo "$auth" | grep -q 'nvapi-good' && echo "$url" | grep -q '/chat/completions$'; then
+elif echo "$auth" | grep -q 'nvapi-TEST-GOOD-NOT-REAL-000000' && echo "$url" | grep -q '/chat/completions$'; then
   body='{"id":"chatcmpl-123"}'
   status="200"
 fi
@@ -2204,13 +2204,13 @@ const { setupNim } = require(${onboardPath});
     const runnerPath = JSON.stringify(path.join(repoRoot, "bin", "lib", "runner.js"));
 
     fs.mkdirSync(fakeBin, { recursive: true });
-    writeOpenAiStyleAuthRetryCurl(fakeBin, "sk-good", ["gpt-5.4"]);
+    writeOpenAiStyleAuthRetryCurl(fakeBin, "sk-TEST-GOOD-NOT-REAL", ["gpt-5.4"]);
 
     const script = String.raw`
 const credentials = require(${credentialsPath});
 const runner = require(${runnerPath});
 
-const answers = ["2", "", "retry", "sk-good", ""];
+const answers = ["2", "", "retry", "sk-TEST-GOOD-NOT-REAL", ""];
 const messages = [];
 
 credentials.prompt = async (message) => {
@@ -2222,7 +2222,7 @@ runner.runCapture = () => "";
 const { setupNim } = require(${onboardPath});
 
 (async () => {
-  process.env.OPENAI_API_KEY = "sk-bad";
+  process.env.OPENAI_API_KEY = "sk-TEST-BAD-NOT-REAL";
   const originalLog = console.log;
   const originalError = console.error;
   const lines = [];
@@ -2257,7 +2257,7 @@ const { setupNim } = require(${onboardPath});
     assert.equal(payload.result.provider, "openai-api");
     assert.equal(payload.result.model, "gpt-5.4");
     assert.equal(payload.result.preferredInferenceApi, "openai-responses");
-    assert.equal(payload.key, "sk-good");
+    assert.equal(payload.key, "sk-TEST-GOOD-NOT-REAL");
     assert.ok(payload.lines.some((line) => line.includes("OpenAI authorization failed")));
     assert.ok(
       payload.messages.some((message) =>
@@ -2300,7 +2300,7 @@ runner.runCapture = () => "";
 const { setupNim } = require(${onboardPath});
 
 (async () => {
-  process.env.ANTHROPIC_API_KEY = "anthropic-bad";
+  process.env.ANTHROPIC_API_KEY = "anthropic-TEST-BAD-NOT-REAL";
   const originalLog = console.log;
   const originalError = console.error;
   const lines = [];
@@ -2378,7 +2378,7 @@ runner.runCapture = () => "";
 const { setupNim } = require(${onboardPath});
 
 (async () => {
-  process.env.GEMINI_API_KEY = "gemini-bad";
+  process.env.GEMINI_API_KEY = "gemini-TEST-BAD-NOT-REAL";
   const originalLog = console.log;
   const originalError = console.error;
   const lines = [];
@@ -2552,7 +2552,7 @@ runner.runCapture = () => "";
 const { setupNim } = require(${onboardPath});
 
 (async () => {
-  process.env.COMPATIBLE_ANTHROPIC_API_KEY = "anthropic-proxy-bad";
+  process.env.COMPATIBLE_ANTHROPIC_API_KEY = "anthropic-proxy-TEST-BAD-NOT-REAL";
   const originalLog = console.log;
   const originalError = console.error;
   const lines = [];

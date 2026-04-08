@@ -20,7 +20,7 @@ describe("redact", () => {
   });
 
   it("redacts nvapi- prefixed keys", () => {
-    expect(redact("using key nvapi-AbCdEfGhIj1234")).toBe("using key <REDACTED>");
+    expect(redact("using key nvapi-TESTFAKE0GhIj1234")).toBe("using key <REDACTED>");
   });
 
   it("redacts classic GitHub personal access tokens (ghp_)", () => {
@@ -38,10 +38,10 @@ describe("redact", () => {
   });
 
   it("handles multiple patterns in one string", () => {
-    const input = "API_KEY=secret nvapi-abcdefghijk Bearer tok123";
+    const input = "API_KEY=secret nvapi-TESTFAKE0ijk Bearer tok123";
     const result = redact(input);
     expect(result).not.toContain("secret");
-    expect(result).not.toContain("nvapi-abcdefghijk");
+    expect(result).not.toContain("nvapi-TESTFAKE0ijk");
     expect(result).not.toContain("tok123");
   });
 

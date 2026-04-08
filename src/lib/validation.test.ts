@@ -128,7 +128,7 @@ describe("classifySandboxCreateFailure", () => {
 
 describe("validateNvidiaApiKeyValue", () => {
   it("returns null for valid key", () => {
-    expect(validateNvidiaApiKeyValue("nvapi-abc123")).toBeNull();
+    expect(validateNvidiaApiKeyValue("nvapi-TEST-VALID-000")).toBeNull();
   });
 
   it("rejects empty key", () => {
@@ -136,7 +136,7 @@ describe("validateNvidiaApiKeyValue", () => {
   });
 
   it("rejects key without nvapi- prefix", () => {
-    expect(validateNvidiaApiKeyValue("sk-abc123")).toBeTruthy();
+    expect(validateNvidiaApiKeyValue("sk-TEST-WRONG-PREFIX")).toBeTruthy();
   });
 });
 

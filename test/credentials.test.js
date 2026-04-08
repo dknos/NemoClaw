@@ -32,17 +32,19 @@ describe("credential prompts", () => {
 
     expect(credentials.loadCredentials()).toEqual({});
 
-    credentials.saveCredential("TEST_API_KEY", "  nvapi-saved-key \r\n");
+    credentials.saveCredential("TEST_API_KEY", "  nvapi-TEST-SAVED-NOT-REAL-00000 \r\n");
 
     expect(credentials.CREDS_DIR).toBe(path.join(home, ".nemoclaw"));
     expect(credentials.CREDS_FILE).toBe(path.join(home, ".nemoclaw", "credentials.json"));
-    expect(credentials.loadCredentials()).toEqual({ TEST_API_KEY: "nvapi-saved-key" });
-    expect(credentials.getCredential("TEST_API_KEY")).toBe("nvapi-saved-key");
+    expect(credentials.loadCredentials()).toEqual({
+      TEST_API_KEY: "nvapi-TEST-SAVED-NOT-REAL-00000",
+    });
+    expect(credentials.getCredential("TEST_API_KEY")).toBe("nvapi-TEST-SAVED-NOT-REAL-00000");
 
     const saved = JSON.parse(
       fs.readFileSync(path.join(home, ".nemoclaw", "credentials.json"), "utf-8"),
     );
-    expect(saved).toEqual({ TEST_API_KEY: "nvapi-saved-key" });
+    expect(saved).toEqual({ TEST_API_KEY: "nvapi-TEST-SAVED-NOT-REAL-00000" });
 
     const dirMode = fs.statSync(path.join(home, ".nemoclaw")).mode & 0o777;
     const fileMode = fs.statSync(path.join(home, ".nemoclaw", "credentials.json")).mode & 0o777;
@@ -58,8 +60,8 @@ describe("credential prompts", () => {
     const credentials = await importCredentialsModule(home);
     expect(credentials.loadCredentials()).toEqual({});
 
-    vi.stubEnv("TEST_API_KEY", "  nvapi-from-env \n");
-    expect(credentials.getCredential("TEST_API_KEY")).toBe("nvapi-from-env");
+    vi.stubEnv("TEST_API_KEY", "  nvapi-TEST-FROM-ENV-NOT-REAL-00 \n");
+    expect(credentials.getCredential("TEST_API_KEY")).toBe("nvapi-TEST-FROM-ENV-NOT-REAL-00");
   });
 
   it("returns null for missing or blank credential values", async () => {
@@ -119,7 +121,9 @@ describe("credential prompts", () => {
 
   it("normalizes credential values and keeps prompting on invalid NVIDIA API key prefixes", async () => {
     const credentials = await importCredentialsModule("/tmp");
-    expect(credentials.normalizeCredentialValue("  nvapi-good-key\r\n")).toBe("nvapi-good-key");
+    expect(credentials.normalizeCredentialValue("  nvapi-TEST-GOOD-NOT-REAL-00000\r\n")).toBe(
+      "nvapi-TEST-GOOD-NOT-REAL-00000",
+    );
 
     const source = fs.readFileSync(
       path.join(import.meta.dirname, "..", "src", "lib", "credentials.ts"),

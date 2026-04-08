@@ -64,9 +64,9 @@ describe("runner env merging", () => {
     process.env.OPENSHELL_GATEWAY = "nemoclaw";
     try {
       const output = runCapture('printf \'%s %s\' "$OPENSHELL_GATEWAY" "$OPENAI_API_KEY"', {
-        env: { OPENAI_API_KEY: "sk-test-secret" },
+        env: { OPENAI_API_KEY: "sk-TEST-NOT-A-REAL-KEY" },
       });
-      expect(output).toBe("nemoclaw sk-test-secret");
+      expect(output).toBe("nemoclaw sk-TEST-NOT-A-REAL-KEY");
     } finally {
       if (originalGateway === undefined) {
         delete process.env.OPENSHELL_GATEWAY;
@@ -173,7 +173,7 @@ describe("validateName", () => {
 describe("redact", () => {
   it("masks NVIDIA API keys", () => {
     const { redact } = require(runnerPath);
-    expect(redact("key is nvapi-abc123XYZ_def456")).toBe("key is nvap******************");
+    expect(redact("key is nvapi-TESTFAKE_XYZ_000")).toBe("key is nvap******************");
   });
 
   it("masks NVCF keys", () => {
@@ -190,22 +190,22 @@ describe("redact", () => {
 
   it("masks key assignments in commands", () => {
     const { redact } = require(runnerPath);
-    expect(redact("export NVIDIA_API_KEY=nvapi-realkey12345")).toContain("nvap");
-    expect(redact("export NVIDIA_API_KEY=nvapi-realkey12345")).not.toContain("realkey12345");
+    expect(redact("export NVIDIA_API_KEY=nvapi-TESTFAKEKEY000")).toContain("nvap");
+    expect(redact("export NVIDIA_API_KEY=nvapi-TESTFAKEKEY000")).not.toContain("TESTFAKEKEY000");
   });
 
   it("masks variables ending in _KEY", () => {
     const { redact } = require(runnerPath);
-    const output = redact('export SERVICE_KEY="supersecretvalue12345"');
-    expect(output).not.toContain("supersecretvalue12345");
-    expect(output).toContain('export SERVICE_KEY="supe');
+    const output = redact('export SERVICE_KEY="TESTFAKEVALUE00000"');
+    expect(output).not.toContain("TESTFAKEVALUE00000");
+    expect(output).toContain('export SERVICE_KEY="TEST');
   });
 
   it("masks bare GitHub personal access tokens", () => {
     const { redact } = require(runnerPath);
-    const output = redact("token ghp_abcdefghijklmnopqrstuvwxyz1234567890");
+    const output = redact("token ghp_TESTFAKE00000000000000000000000000000");
     expect(output).toContain("ghp_");
-    expect(output).not.toContain("abcdefghijklmnopqrstuvwxyz1234567890");
+    expect(output).not.toContain("TESTFAKE00000000000000000000000000000");
   });
 
   it("masks bearer tokens case-insensitively", () => {
@@ -225,16 +225,16 @@ describe("redact", () => {
 
   it("masks quoted assignment values", () => {
     const { redact } = require(runnerPath);
-    const output = redact('API_KEY="secret123abc"');
-    expect(output).not.toContain("secret123abc");
-    expect(output).toContain('API_KEY="sec');
+    const output = redact('API_KEY="TESTFAKE0abc"');
+    expect(output).not.toContain("TESTFAKE0abc");
+    expect(output).toContain('API_KEY="TEST');
   });
 
   it("masks multiple secrets in one string", () => {
     const { redact } = require(runnerPath);
-    const output = redact("nvapi-firstkey12345 nvapi-secondkey67890");
-    expect(output).not.toContain("firstkey12345");
-    expect(output).not.toContain("secondkey67890");
+    const output = redact("nvapi-TESTFAKEONE000 nvapi-TESTFAKETWO000");
+    expect(output).not.toContain("TESTFAKEONE000");
+    expect(output).not.toContain("TESTFAKETWO000");
     expect(output).toContain("nvap");
     expect(output).toContain(" ");
   });
@@ -249,7 +249,7 @@ describe("redact", () => {
 
   it("masks auth-style query parameters case-insensitively", () => {
     const { redact } = require(runnerPath);
-    const output = redact("https://example.com?Signature=secret123456&AUTH=anothersecret123");
+    const output = redact("https://example.com?Signature=TESTFAKE0456&AUTH=anothersecret123");
     expect(output).toBe("https://example.com/?Signature=****&AUTH=****");
   });
 
@@ -272,7 +272,7 @@ describe("regression guards", () => {
     const originalExecSync = childProcess.execSync;
     childProcess.execSync = () => {
       throw new Error(
-        'command failed: export SERVICE_KEY="supersecretvalue12345" ghp_abcdefghijklmnopqrstuvwxyz1234567890',
+        'command failed: export SERVICE_KEY="TESTFAKEVALUE00000" ghp_TESTFAKE00000000000000000000000000000',
       );
     };
 
@@ -289,7 +289,7 @@ describe("regression guards", () => {
 
       expect(error).toBeInstanceOf(Error);
       expect(error.message).toContain("ghp_");
-      expect(error.message).not.toContain("supersecretvalue12345");
+      expect(error.message).not.toContain("TESTFAKEVALUE00000");
       expect(error.message).not.toContain("abcdefghijklmnopqrstuvwxyz1234567890");
     } finally {
       childProcess.execSync = originalExecSync;
@@ -301,8 +301,8 @@ describe("regression guards", () => {
     const originalExecSync = childProcess.execSync;
     childProcess.execSync = () => {
       const err = /** @type {any} */ (new Error("command failed"));
-      err.cmd = "echo nvapi-aaaabbbbcccc1111 && echo ghp_abcdefghijklmnopqrstuvwxyz123456";
-      err.output = ["stdout: nvapi-aaaabbbbcccc1111", "stderr: PASSWORD=secret123456"];
+      err.cmd = "echo nvapi-TESTFAKE00001111 && echo ghp_TESTFAKE0000000000000000000000000";
+      err.output = ["stdout: nvapi-TESTFAKE00001111", "stderr: PASSWORD=TESTFAKE0456"];
       throw err;
     };
 
@@ -319,11 +319,11 @@ describe("regression guards", () => {
 
       expect(error).toBeDefined();
       expect(error).toBeInstanceOf(Error);
-      expect(error.cmd).not.toContain("nvapi-aaaabbbbcccc1111");
-      expect(error.cmd).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz123456");
+      expect(error.cmd).not.toContain("nvapi-TESTFAKE00001111");
+      expect(error.cmd).not.toContain("ghp_TESTFAKE0000000000000000000000000");
       expect(Array.isArray(error.output)).toBe(true);
-      expect(error.output[0]).not.toContain("nvapi-aaaabbbbcccc1111");
-      expect(error.output[1]).not.toContain("secret123456");
+      expect(error.output[0]).not.toContain("nvapi-TESTFAKE00001111");
+      expect(error.output[1]).not.toContain("TESTFAKE0456");
       expect(error.output[0]).toContain("****");
       expect(error.output[1]).toContain("****");
     } finally {
@@ -342,8 +342,8 @@ describe("regression guards", () => {
     // @ts-expect-error — intentional partial mock for testing
     childProcess.spawnSync = () => ({
       status: 1,
-      stdout: "token ghp_abcdefghijklmnopqrstuvwxyz1234567890\n",
-      stderr: 'export SERVICE_KEY="supersecretvalue12345"\n',
+      stdout: "token ghp_TESTFAKE00000000000000000000000000000\n",
+      stderr: 'export SERVICE_KEY="TESTFAKEVALUE00000"\n',
     });
     process.exit = (code) => {
       throw new Error(`exit:${code}`);
@@ -354,7 +354,7 @@ describe("regression guards", () => {
       const { run } = require(runnerPath);
       expect(() => run("echo fail")).toThrow("exit:1");
       expect(stdoutSpy).toHaveBeenCalledWith("token ghp_********************\n");
-      expect(stderrSpy).toHaveBeenCalledWith('export SERVICE_KEY="supe*****************"\n');
+      expect(stderrSpy).toHaveBeenCalledWith('export SERVICE_KEY="TEST**************"\n');
       expect(errorSpy).toHaveBeenCalledWith("  Command failed (exit 1): echo fail");
     } finally {
       childProcess.spawnSync = originalSpawnSync;

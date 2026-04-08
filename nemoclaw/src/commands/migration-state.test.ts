@@ -584,8 +584,8 @@ describe("commands/migration-state", () => {
         "/home/user/.openclaw/openclaw.json",
         JSON.stringify({
           version: 1,
-          gateway: { auth: { token: "secret123" } },
-          nvidia: { apiKey: "nvapi-test-key" },
+          gateway: { auth: { token: "TEST-NOT-A-REAL-TOKEN" } },
+          nvidia: { apiKey: "nvapi-TEST-NOT-A-REAL-KEY-000000" },
           agents: { defaults: { model: { primary: "test-model" } } },
         }),
       );
@@ -636,10 +636,10 @@ describe("commands/migration-state", () => {
         JSON.stringify({
           version: 1,
           provider: {
-            accessToken: "test-access-token",
-            refreshToken: "test-refresh-token",
+            accessToken: "TEST-NOT-A-REAL-ACCESS-TOKEN",
+            refreshToken: "TEST-NOT-A-REAL-REFRESH-TOKEN",
             privateKey: "test-private-key",
-            clientSecret: "test-client-secret",
+            clientSecret: "TEST-NOT-A-REAL-CLIENT-SECRET",
             displayName: "should-be-preserved",
           },
         }),
@@ -780,8 +780,8 @@ describe("commands/migration-state", () => {
         "/home/user/.openclaw/openclaw.json",
         JSON.stringify({
           version: 1,
-          gateway: { auth: { token: "secret123" } },
-          nvidia: { apiKey: "nvapi-test-key" },
+          gateway: { auth: { token: "TEST-NOT-A-REAL-TOKEN" } },
+          nvidia: { apiKey: "nvapi-TEST-NOT-A-REAL-KEY-000000" },
         }),
       );
 
