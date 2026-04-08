@@ -55,10 +55,26 @@ Each entry in the `network` section defines an endpoint group with the following
 
 Each endpoint supports two access modes that control how OpenShell inspects traffic:
 
-| Field | Value | Behavior |
-|-------|-------|----------|
-| `protocol` | `rest` | OpenShell terminates TLS and inspects HTTP method/path against `rules`. Only matching requests are forwarded. |
-| `access` | `full` | OpenShell creates a raw CONNECT tunnel. No HTTP inspection — all traffic to the host:port is allowed. Use only when protocol-level inspection is not possible (for example, `git` SSH-over-HTTPS or WebSocket upgrades). |
+:::{list-table}
+:header-rows: 1
+:widths: 15 15 70
+
+* - Field
+  - Value
+  - Behavior
+
+* - `protocol`
+  - `rest`
+  - OpenShell terminates TLS and inspects HTTP method/path against `rules`.
+    Only matching requests are forwarded.
+
+* - `access`
+  - `full`
+  - OpenShell creates a raw CONNECT tunnel.
+    No HTTP inspection — all traffic to the host:port is allowed.
+    Use only when protocol-level inspection is not possible, such as `git` SSH-over-HTTPS or WebSocket upgrades.
+
+:::
 
 #### Enforcement and TLS Fields
 
@@ -77,7 +93,7 @@ endpoints:
 :::{note}
 `access: full` bypasses all HTTP-layer rules.
 The `github` policy uses `access: full` because `git` requires CONNECT tunneling.
-This means method and path restrictions **cannot** be enforced on `api.github.com` — the agent has full API access.
+This means method and path restrictions cannot be enforced on `api.github.com` — the agent has full API access.
 See [Security Best Practices](../security/best-practices.md) for hardening options.
 :::
 

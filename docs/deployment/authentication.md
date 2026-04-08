@@ -26,8 +26,8 @@ This page documents the device authentication settings for the OpenClaw gateway,
 
 ## `NEMOCLAW_DISABLE_DEVICE_AUTH`
 
-**Location**: Dockerfile build argument (line 59), propagated to `openclaw.json` as `dangerouslyDisableDeviceAuth`
-**Default**: `0` (device auth enabled — secure by default)
+**Location**: Dockerfile build argument (line 59), propagated to `openclaw.json` as `dangerouslyDisableDeviceAuth`.
+**Default**: `0` (device auth enabled — secure by default).
 
 ### What It Does
 
@@ -73,13 +73,18 @@ Combined with a cloudflared tunnel or LAN-bind changes in remote deployments, th
 ### Related Settings
 
 `allowInsecureAuth`
-: Derived automatically from the `CHAT_UI_URL` scheme at build time. When the URL uses `http://` (local development), insecure auth is allowed. When it uses `https://`, insecure auth is blocked. See [Security Best Practices](../security/best-practices.md) for details.
+: Derived automatically from the `CHAT_UI_URL` scheme at build time.
+  When the URL uses `http://` (local development), insecure auth is allowed.
+  When it uses `https://`, insecure auth is blocked.
+  See [Security Best Practices](../security/best-practices.md) for details.
 
 `auth.token`
-: A gateway bearer token generated at build time using `secrets.token_hex(32)`. Unique per image build.
+: A gateway bearer token generated at build time using `secrets.token_hex(32)`.
+  Unique per image build.
 
 `trustedProxies`
-: IPs allowed to set `X-Forwarded-For` headers. Defaults to `127.0.0.1` and `::1`.
+: IPs allowed to set `X-Forwarded-For` headers.
+  Defaults to `127.0.0.1` and `::1`.
 
 ## Next Steps
 

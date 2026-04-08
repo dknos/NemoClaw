@@ -96,7 +96,9 @@ The following endpoint groups are allowed by default:
 * - `discord`
   - `discord.com:443`, `gateway.discord.gg:443`, `cdn.discordapp.com:443`
   - `/usr/local/bin/node`
-  - REST API: GET, POST. WebSocket gateway: `access: full`. CDN: GET only.
+  - REST API allows GET and POST.
+    WebSocket gateway uses `access: full`.
+    CDN allows GET only.
 
 :::
 
