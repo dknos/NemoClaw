@@ -64,14 +64,9 @@ The following endpoint groups are allowed by default:
   - All methods
 
 * - `github`
-  - `github.com:443`
+  - `github.com:443`, `api.github.com:443`
   - `/usr/bin/gh`, `/usr/bin/git`
-  - All methods, all paths
-
-* - `github_rest_api`
-  - `api.github.com:443`
-  - `/usr/bin/gh`
-  - GET, POST, PATCH, PUT, DELETE
+  - `access: full` (no HTTP inspection — CONNECT tunnel)
 
 * - `clawhub`
   - `clawhub.ai:443`
@@ -91,13 +86,25 @@ The following endpoint groups are allowed by default:
 * - `npm_registry`
   - `registry.npmjs.org:443`
   - `/usr/local/bin/openclaw`, `/usr/local/bin/npm`, `/usr/local/bin/node`
-  - All methods, all paths
+  - `access: full` (no HTTP inspection — CONNECT tunnel)
 
 * - `telegram`
   - `api.telegram.org:443`
-  - Any binary
+  - `/usr/local/bin/node`
   - GET, POST on `/bot*/**`
 
+* - `discord`
+  - `discord.com:443`, `gateway.discord.gg:443`, `cdn.discordapp.com:443`
+  - `/usr/local/bin/node`
+  - REST API: GET, POST. WebSocket gateway: `access: full`. CDN: GET only.
+
+:::
+
+:::{note}
+Endpoints with `access: full` use a raw CONNECT tunnel with no HTTP-layer inspection.
+Method and path restrictions cannot be enforced on these endpoints.
+The `github` policy uses `access: full` because `git` requires CONNECT tunneling.
+See [Security Best Practices](../security/best-practices.md) for details on the L4-only vs L7 inspection trade-off.
 :::
 
 All endpoints use TLS termination and are enforced at port 443.

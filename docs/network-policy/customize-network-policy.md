@@ -51,6 +51,36 @@ Each entry in the `network` section defines an endpoint group with the following
 `rules`
 : HTTP methods and paths that are permitted.
 
+### Access Modes
+
+Each endpoint supports two access modes that control how OpenShell inspects traffic:
+
+| Field | Value | Behavior |
+|-------|-------|----------|
+| `protocol` | `rest` | OpenShell terminates TLS and inspects HTTP method/path against `rules`. Only matching requests are forwarded. |
+| `access` | `full` | OpenShell creates a raw CONNECT tunnel. No HTTP inspection — all traffic to the host:port is allowed. Use only when protocol-level inspection is not possible (for example, `git` SSH-over-HTTPS or WebSocket upgrades). |
+
+#### Enforcement and TLS Fields
+
+```yaml
+endpoints:
+  - host: api.example.com
+    port: 443
+    protocol: rest        # Enable HTTP inspection
+    enforcement: enforce  # Block non-matching requests (vs "audit" = log only)
+    tls: terminate        # OpenShell terminates TLS to inspect HTTP layer
+    rules:
+      - allow: { method: GET, path: "/v1/**" }
+      - allow: { method: POST, path: "/v1/chat/completions" }
+```
+
+:::{note}
+`access: full` bypasses all HTTP-layer rules.
+The `github` policy uses `access: full` because `git` requires CONNECT tunneling.
+This means method and path restrictions **cannot** be enforced on `api.github.com` — the agent has full API access.
+See [Security Best Practices](../security/best-practices.md) for hardening options.
+:::
+
 ### Re-Run Onboard
 
 Apply the updated policy by re-running the onboard wizard:
@@ -103,7 +133,7 @@ Available presets:
 
 | Preset | Endpoints |
 |--------|-----------|
-| `discord` | Discord webhook API |
+| `discord` | Discord REST API, WebSocket gateway, CDN |
 | `docker` | Docker Hub, NVIDIA container registry |
 | `huggingface` | Hugging Face model registry |
 | `jira` | Atlassian Jira API |

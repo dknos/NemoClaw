@@ -271,6 +271,7 @@ Credential Storage <security/credential-storage>
 Deploy to a Remote GPU Instance <deployment/deploy-to-remote-gpu>
 Set Up Telegram <deployment/set-up-telegram-bridge>
 Sandbox Hardening <deployment/sandbox-hardening>
+Authentication <deployment/authentication>
 ```
 
 ```{toctree}
