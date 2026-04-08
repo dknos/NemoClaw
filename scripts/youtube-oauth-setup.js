@@ -31,7 +31,7 @@ const ENV_FILE    = path.join(process.env.HOME, ".nemoclaw_env");
 const REDIRECT_PORT = 4521;
 const REDIRECT_URI  = `http://localhost:${REDIRECT_PORT}/oauth/callback`;
 const SCOPES = [
-  "https://www.googleapis.com/auth/youtube.readonly",
+  "https://www.googleapis.com/auth/youtube",
 ].join(" ");
 
 // ── Load env ─────────────────────────────────────────────────────────────────

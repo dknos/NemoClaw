@@ -3,3 +3,12 @@
 # Add more tracks below, order is respected
 
 /mnt/c/Users/rneeb/Downloads/EPIPHANY_KLICKAUD (1).mp3
+/mnt/c/Users/rneeb/Downloads/suno (1).mp3
+/mnt/c/Users/rneeb/Desktop/Suno_DownloadEverything-main/My Suno Songs/stairway to meows.mp3
+/mnt/c/Users/rneeb/Desktop/Suno_DownloadEverything-main/My Suno Songs/MrBigPipes Kitty Party (ver.1) (Cover) v2.mp3
+/mnt/c/Users/rneeb/Desktop/Suno_DownloadEverything-main/My Suno Songs/214.4s Recording (Nov 13 @ 3_24 PM) (Cover) v2.mp3
+/mnt/c/Users/rneeb/Desktop/Suno_DownloadEverything-main/My Suno Songs/189.8s Recording (Nov 21 @ 8_05 PM) (Cover) v24.mp3
+/mnt/c/Users/rneeb/Desktop/Suno_DownloadEverything-main/My Suno Songs/138.8s Recording (Nov 13 @ 12_18 AM) (Cover) (Cover) v4.mp3
+/mnt/c/Users/rneeb/Desktop/Suno_DownloadEverything-main/My Suno Songs/140.6s Recording (Dec 7 @ 4_52 AM) (Cover) v14.mp3
+/mnt/c/Users/rneeb/Desktop/Suno_DownloadEverything-main/My Suno Songs/142.0s Recording (Nov 13 @ 8_18 AM) (Cover) v4.mp3
+/mnt/c/Users/rneeb/Desktop/Suno_DownloadEverything-main/My Suno Songs/135.1s Recording (Nov 10 @ 11_56 PM) (Cover) v33.mp3

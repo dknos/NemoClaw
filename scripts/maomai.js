@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-/* global fetch */
 /**
  * MaoMao — Architect Discord Agent
  * Validates outcomes, calculates odds, generates drops, audits logic
@@ -27,8 +26,8 @@ const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const ALLOWED_CHANNEL_IDS = process.env.DISCORD_CHANNELS
   ? process.env.DISCORD_CHANNELS.split(",").map(s => s.trim().split(":")[1]).filter(Boolean)
   : (DISCORD_CHANNEL_ID ? [DISCORD_CHANNEL_ID] : []);
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "qwen/qwen3.6-plus:free";
+const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY;
+const NVIDIA_MODEL = process.env.NVIDIA_MODEL || "deepseek-ai/deepseek-v3.1-terminus";
 const TASKS_FILE = path.join(os.homedir(), ".nemoclaw", "tasks.jsonl");
 const RESULTS_FILE = path.join(os.homedir(), ".nemoclaw", "results.jsonl");
 
@@ -447,27 +446,26 @@ NEVER fabricate data. NEVER invent fake system statuses. NEVER be dramatic. You'
 
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({
-      model: OPENROUTER_MODEL,
+      model: NVIDIA_MODEL,
       messages: [
         { role: "system", content: SOUL },
         { role: "user", content: userMessage },
       ],
-      temperature: 0.15,
-      top_p: 0.9,
-      max_tokens: 1500,
+      temperature: 0.2,
+      top_p: 0.7,
+      max_tokens: 8192,
       stream: true,
-      reasoning: { enabled: true },
     });
 
     const req = https.request(
       {
-        hostname: "openrouter.ai",
-        path: "/api/v1/chat/completions",
+        hostname: "integrate.api.nvidia.com",
+        path: "/v1/chat/completions",
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(payload),
-          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+          Authorization: `Bearer ${NVIDIA_API_KEY}`,
         },
       },
       (res) => {

@@ -19,7 +19,7 @@ const http = require("http");
 const path = require("path");
 
 const SESSION_FILE  = path.join(process.env.HOME, "netify-dev", "public", "data", "live-session.json");
-const BREAKROOM_API = "http://localhost:3001/api/breakroom-chat";
+const BREAKROOM_API = "http://localhost:3003/api/breakroom-chat";
 const POLL_MS       = 1500;  // how often we check for new messages
 
 let lastSeenTs = Date.now(); // skip everything before startup

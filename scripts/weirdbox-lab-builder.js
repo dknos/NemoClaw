@@ -915,6 +915,9 @@ const MAOMAI_SOUL  = BUILD_TARGET === "mindpipes" ? MP_MAOMAI_SOUL  : WB_MAOMAI_
 const CODEGEN_SOUL = BUILD_TARGET === "mindpipes" ? MP_CODEGEN_SOUL : WB_CODEGEN_SOUL;
 
 // ── Write output ─────────────────────────────────────────────────────
+// Hard size limits to prevent runaway slop (see /tmp/mindpipes-slop-snapshot-20260407 for the incident)
+const HARD_MAX_BYTES = 256 * 1024;       // 256KB absolute cap per file
+const HARD_MAX_GROW_BYTES = 30 * 1024;   // 30KB max growth per single write
 function writeLabFile(html) {
   if (!isValidHtml(html)) { console.warn(`${TAG} Refusing to write invalid HTML`); return false; }
   const allowed = ["weirdbox-lab.html", "mindpipes.html"];
@@ -927,6 +930,20 @@ function writeLabFile(html) {
   const injected = stripped.includes("</body>")
     ? stripped.replace("</body>", MONITOR_PANEL + "\n</body>")
     : stripped + "\n" + MONITOR_PANEL;
+  // Hard size cap — refuse anything over budget
+  if (injected.length > HARD_MAX_BYTES) {
+    console.error(`${TAG} SIZE CAP: refusing write of ${(injected.length/1024).toFixed(1)}KB (cap ${(HARD_MAX_BYTES/1024).toFixed(0)}KB)`);
+    notifyDiscord(`**${TAG}** ⚠️ SIZE CAP: rejected ${(injected.length/1024).toFixed(1)}KB write (cap ${(HARD_MAX_BYTES/1024).toFixed(0)}KB)`);
+    return false;
+  }
+  // Growth cap — refuse if this write would grow the on-disk file by more than HARD_MAX_GROW_BYTES
+  let prevSize = 0;
+  try { prevSize = fs.existsSync(TARGET_FILE) ? fs.statSync(TARGET_FILE).size : 0; } catch (_e) { /* ignore */ }
+  if (prevSize > 0 && injected.length - prevSize > HARD_MAX_GROW_BYTES) {
+    console.error(`${TAG} GROWTH CAP: refusing write — grew ${((injected.length - prevSize)/1024).toFixed(1)}KB (cap ${(HARD_MAX_GROW_BYTES/1024).toFixed(0)}KB) [${(prevSize/1024).toFixed(1)}→${(injected.length/1024).toFixed(1)}KB]`);
+    notifyDiscord(`**${TAG}** ⚠️ GROWTH CAP: rejected ${((injected.length - prevSize)/1024).toFixed(1)}KB grow in one write`);
+    return false;
+  }
   fs.writeFileSync(TARGET_FILE, injected, "utf8");
   console.log(`${TAG} Wrote ${(injected.length/1024).toFixed(1)}KB to ${path.basename(TARGET_FILE)}`);
   writeLiveState();
@@ -951,6 +968,7 @@ function notifyDiscord(msg) {
 async function build() {
   let consecutiveFailures = 0;
   let iterNum = 0;
+  const issueHistory = []; // last few iters of normalized issue signatures — detects structural loops
 
   liveState.status = "starting";
   liveState.target = BUILD_TARGET;
@@ -1115,6 +1133,16 @@ Output a COMPLETE, visually stunning single-file HTML page. All CSS in <style>, 
     } catch (_e) { if (review.text) issues = [{ description: review.text.slice(0,300), fix: "See description" }]; }
     logAgent("Pipes", "done", issues.length ? `Found ${issues.length} issue(s): ${issues.map(i=>i.description).join("; ").slice(0,120)}` : "No critical issues");
 
+    // Structural-loop detection: if Pipes flags the same issue category 2+ iters in a row, bail
+    const issueSig = issues.map(i => (i.description || "").toLowerCase().replace(/[^a-z0-9 ]/g,"").slice(0,60)).sort().join("|");
+    issueHistory.push(issueSig);
+    if (issueHistory.length > 3) issueHistory.shift();
+    if (issueSig && issueHistory.length >= 2 && issueHistory.slice(-2).every(s => s === issueSig)) {
+      console.warn(`${TAG} structural loop — same issues 2 iters in a row, stopping`);
+      notifyDiscord(`**${TAG}** ⚠️ Structural loop detected (same issues 2x) — stopping at iter ${iterNum}`);
+      break;
+    }
+
     if (timeLeft() < budgetMs * 0.08) break;
 
     // 3c.5 — MindPipes media generation (ZTurbo image / LTX video per MaoMao plan)
@@ -1195,24 +1223,35 @@ ${currentHtml.length > 20000
     let updated = false;
     if (currentHtml.length > 20000 && applyResult.text?.includes("<<<SEARCH")) {
       const patched = applyDiff(currentHtml, applyResult.text);
-      if (patched) {
+      // Diff growth gate: reject if it inflates the page by more than 15%
+      if (patched && patched.length <= currentHtml.length * 1.15) {
         currentHtml = patched;
-        writeLabFile(currentHtml);
-        logAgent("Pipes", "done", `DIFF applied. New size: ${(currentHtml.length/1024).toFixed(1)}KB`);
-        updated = true;
-        consecutiveFailures = 0;
+        if (writeLabFile(currentHtml)) {
+          logAgent("Pipes", "done", `DIFF applied. New size: ${(currentHtml.length/1024).toFixed(1)}KB`);
+          updated = true;
+          consecutiveFailures = 0;
+        } else {
+          consecutiveFailures++;
+        }
+      } else if (patched) {
+        logAgent("Pipes", "error", `DIFF rejected — would grow ${(currentHtml.length/1024).toFixed(1)}KB → ${(patched.length/1024).toFixed(1)}KB (>15%)`);
+        consecutiveFailures++;
       }
     }
 
     if (!updated) {
       const newHtml = extractHtml(applyResult.text);
-      if (isValidHtml(newHtml) && newHtml.length > currentHtml.length * 0.5) {
+      // Reject shrinkage <50% AND growth >15%
+      if (isValidHtml(newHtml) && newHtml.length > currentHtml.length * 0.5 && newHtml.length <= currentHtml.length * 1.15) {
         currentHtml = newHtml;
-        writeLabFile(currentHtml);
-        logAgent("Pipes", "done", `Full rewrite. New size: ${(currentHtml.length/1024).toFixed(1)}KB`);
-        consecutiveFailures = 0;
+        if (writeLabFile(currentHtml)) {
+          logAgent("Pipes", "done", `Full rewrite. New size: ${(currentHtml.length/1024).toFixed(1)}KB`);
+          consecutiveFailures = 0;
+        } else {
+          consecutiveFailures++;
+        }
       } else {
-        logAgent("Pipes", "error", `Output rejected — keeping current ${(currentHtml.length/1024).toFixed(1)}KB`);
+        logAgent("Pipes", "error", `Output rejected — keeping current ${(currentHtml.length/1024).toFixed(1)}KB (got ${newHtml ? (newHtml.length/1024).toFixed(1)+"KB" : "invalid"})`);
         consecutiveFailures++;
       }
     }
@@ -1231,14 +1270,19 @@ ${currentHtml.length > 20000
       logAgent("Llama", "polishing", `Polish pass — ${(currentHtml.length/1024).toFixed(1)}KB`);
       if (currentHtml.length > 20000 && llamaResult.text?.includes("<<<SEARCH")) {
         const patched = applyDiff(currentHtml, llamaResult.text);
-        if (patched) { currentHtml = patched; writeLabFile(currentHtml); logAgent("Llama", "done", `Patch applied. ${(currentHtml.length/1024).toFixed(1)}KB`); }
-        else { logAgent("Llama", "idle", "Patch failed — kept current"); }
+        if (patched && patched.length <= currentHtml.length * 1.15) {
+          currentHtml = patched;
+          if (writeLabFile(currentHtml)) logAgent("Llama", "done", `Patch applied. ${(currentHtml.length/1024).toFixed(1)}KB`);
+        } else if (patched) {
+          logAgent("Llama", "idle", `Patch rejected — would grow >15% (${(patched.length/1024).toFixed(1)}KB)`);
+        } else {
+          logAgent("Llama", "idle", "Patch failed — kept current");
+        }
       } else {
         const llamaHtml = extractHtml(llamaResult.text);
-        if (isValidHtml(llamaHtml) && llamaHtml.length > currentHtml.length * 0.6) {
+        if (isValidHtml(llamaHtml) && llamaHtml.length > currentHtml.length * 0.6 && llamaHtml.length <= currentHtml.length * 1.15) {
           currentHtml = llamaHtml;
-          writeLabFile(currentHtml);
-          logAgent("Llama", "done", `Full polish applied. ${(currentHtml.length/1024).toFixed(1)}KB`);
+          if (writeLabFile(currentHtml)) logAgent("Llama", "done", `Full polish applied. ${(currentHtml.length/1024).toFixed(1)}KB`);
         } else {
           logAgent("Llama", "idle", "Output rejected — kept current");
         }
