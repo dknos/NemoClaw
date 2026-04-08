@@ -12,7 +12,7 @@ spec:
   containers:
     # Docker daemon (DinD)
     - name: dind
-      image: docker:24-dind
+      image: docker:24-dind@sha256:167bad11bade46d4d9a88646ed7f9b11014dfdb898ba75c5a390eb03f21f0c45
       securityContext:
         privileged: true
       env:
@@ -33,7 +33,7 @@ spec:
 
     # Workspace - runs official NemoClaw installer
     - name: workspace
-      image: node:22
+      image: node:22@sha256:a764dbb37724775d92e233d0d1fc0fdec53bc72c7c0226ee7e1bba48ef932cd1
       command:
         - bash
         - -c
@@ -104,7 +104,7 @@ spec:
   initContainers:
     # Configure Docker daemon for cgroup v2
     - name: init-docker-config
-      image: busybox
+      image: busybox@sha256:b8d1827e38a1d49cd17217efd7b07d689e4ea1744e39c7dcbb95533d175bea65
       command: ["sh", "-c", "echo '{\"default-cgroupns-mode\":\"host\"}' > /etc/docker/daemon.json"]
       volumeMounts:
         - name: docker-config
