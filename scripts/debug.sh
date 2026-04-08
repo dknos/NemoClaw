@@ -85,10 +85,14 @@ done
 TMPDIR_BASE="${TMPDIR:-/tmp}"
 COLLECT_DIR=$(mktemp -d "${TMPDIR_BASE}/nemoclaw-debug-XXXXXX")
 SANDBOX_SSH_CONFIG=""
+SANDBOX_SSH_KNOWN=""
 cleanup() {
   rm -rf "$COLLECT_DIR"
   if [ -n "$SANDBOX_SSH_CONFIG" ]; then
     rm -f "$SANDBOX_SSH_CONFIG"
+  fi
+  if [ -n "$SANDBOX_SSH_KNOWN" ]; then
+    rm -f "$SANDBOX_SSH_KNOWN"
   fi
 }
 trap cleanup EXIT
