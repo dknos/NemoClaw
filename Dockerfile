@@ -469,6 +469,12 @@ RUN chown root:root /sandbox/.nemoclaw \
     && touch /sandbox/.nemoclaw/config.json \
     && chown sandbox:sandbox /sandbox/.nemoclaw/config.json
 
+# Health check: poll the gateway's /health endpoint so Docker (and Compose)
+# can detect and restart unhealthy containers in standalone deployments.
+# Ref: https://github.com/NVIDIA/NemoClaw/issues/1430
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -sf http://127.0.0.1:18789/health || exit 1
+
 # Entrypoint runs as root to start the gateway as the gateway user,
 # then drops to sandbox for agent commands. See nemoclaw-start.sh.
 ENTRYPOINT ["/usr/local/bin/nemoclaw-start"]
