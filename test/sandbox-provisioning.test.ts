@@ -60,6 +60,40 @@ function dockerRunCommandBetween(
     .replace(/\\\n/g, " ");
 }
 
+function dockerHealthCommandBetween(
+  dockerfile: string,
+  startMarker: string,
+  endMarker?: string,
+): string {
+  const start = dockerfile.indexOf(startMarker);
+  const end = endMarker ? dockerfile.indexOf(endMarker, start) : dockerfile.length;
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error(`Expected Dockerfile health check after ${startMarker}`);
+  }
+  const healthOffset = dockerfile.slice(start, end).search(/^HEALTHCHECK\b/m);
+  const healthIndex = healthOffset === -1 ? -1 : start + healthOffset;
+  if (healthIndex === -1) {
+    throw new Error(`Expected HEALTHCHECK instruction after ${startMarker}`);
+  }
+  const healthLines: string[] = [];
+  for (const line of dockerfile.slice(healthIndex, end).split("\n")) {
+    healthLines.push(line);
+    if (!line.trimEnd().endsWith("\\")) {
+      break;
+    }
+  }
+  const lastLine = healthLines[healthLines.length - 1]?.trimEnd() ?? "";
+  if (lastLine.endsWith("\\")) {
+    throw new Error(`Expected complete HEALTHCHECK instruction after ${startMarker}`);
+  }
+  const instruction = healthLines.join("\n").trim().replace(/\\\n/g, " ");
+  const command = instruction.match(/(?:^|\s)CMD\s+([\s\S]+)$/)?.[1];
+  if (!command) {
+    throw new Error(`Expected shell-form HEALTHCHECK CMD after ${startMarker}`);
+  }
+  return command.trim();
+}
+
 function runDockerShell(command: string, sandboxRoot: string) {
   const logPath = path.join(sandboxRoot, "calls.log");
   fs.rmSync(logPath, { force: true });
@@ -78,7 +112,12 @@ function runDockerShell(command: string, sandboxRoot: string) {
   return { result, calls };
 }
 
-function runLoggedDockerShell(command: string, tmp: string, functionDefs: string[] = []) {
+function runLoggedDockerShell(
+  command: string,
+  tmp: string,
+  functionDefs: string[] = [],
+  env: Record<string, string | undefined> = {},
+) {
   const logPath = path.join(tmp, "calls.log");
   fs.rmSync(logPath, { force: true });
   const script = [
@@ -90,36 +129,108 @@ function runLoggedDockerShell(command: string, tmp: string, functionDefs: string
   ].join("\n");
   const scriptPath = path.join(tmp, "run-docker-block.sh");
   fs.writeFileSync(scriptPath, script, { mode: 0o700 });
-  const result = spawnSync("bash", [scriptPath], { encoding: "utf-8", timeout: 5000 });
+  const childEnv = { ...process.env };
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) {
+      delete childEnv[key];
+    } else {
+      childEnv[key] = value;
+    }
+  }
+  const result = spawnSync("bash", [scriptPath], {
+    encoding: "utf-8",
+    env: childEnv,
+    timeout: 5000,
+  });
   const calls = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf-8") : "";
   return { result, calls };
 }
 
 describe("sandbox provisioning: image health checks (#1430)", () => {
-  it("production image probes the configured gateway port", () => {
+  it.each([
+    ["default dashboard URL", {}, "http://127.0.0.1:18789/health"],
+    [
+      "CHAT_UI_URL with scheme",
+      { CHAT_UI_URL: "http://127.0.0.1:19000" },
+      "http://127.0.0.1:19000/health",
+    ],
+    [
+      "CHAT_UI_URL without scheme",
+      { CHAT_UI_URL: "remote-host:19111" },
+      "http://127.0.0.1:19111/health",
+    ],
+    [
+      "OPENCLAW_GATEWAY_PORT",
+      { CHAT_UI_URL: "http://127.0.0.1:19000", OPENCLAW_GATEWAY_PORT: "19333" },
+      "http://127.0.0.1:19333/health",
+    ],
+    [
+      "NEMOCLAW_DASHBOARD_PORT override",
+      {
+        CHAT_UI_URL: "http://127.0.0.1:19000",
+        NEMOCLAW_DASHBOARD_PORT: "19222",
+        OPENCLAW_GATEWAY_PORT: "19333",
+      },
+      "http://127.0.0.1:19222/health",
+    ],
+  ])("routes production gateway probe through %s", (_label, env, expectedUrl) => {
     const dockerfile = fs.readFileSync(DOCKERFILE, "utf-8");
-    const start = dockerfile.indexOf("# Health check: poll the gateway's /health endpoint");
-    const end = dockerfile.indexOf("# Entrypoint runs as root", start);
-    expect(start).toBeGreaterThanOrEqual(0);
-    expect(end).toBeGreaterThan(start);
+    const command = dockerHealthCommandBetween(
+      dockerfile,
+      "# Health check: poll the gateway's /health endpoint",
+      "# Entrypoint runs as root",
+    );
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-health-probe-"));
 
-    const healthcheck = dockerfile.slice(start, end);
-    expect(healthcheck).toContain("HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3");
-    expect(healthcheck).toContain("NEMOCLAW_DASHBOARD_PORT");
-    expect(healthcheck).toContain("OPENCLAW_GATEWAY_PORT");
-    expect(healthcheck).toContain("CHAT_UI_URL");
-    expect(healthcheck).toContain("127.0.0.1:${port}/health");
-    expect(healthcheck).not.toContain("127.0.0.1:18789/health");
+    try {
+      const probe = runLoggedDockerShell(
+        command,
+        tmp,
+        ['curl() { printf "%s\\n" "$*" >> "$call_log"; }'],
+        {
+          NEMOCLAW_DASHBOARD_PORT: undefined,
+          OPENCLAW_GATEWAY_PORT: undefined,
+          CHAT_UI_URL: undefined,
+          ...env,
+        },
+      );
+
+      expect(probe.result.status).toBe(0);
+      expect(probe.calls).toContain("-sf");
+      expect(probe.calls).toContain(expectedUrl);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
-  it("base and test images keep non-service health checks runtime-only", () => {
-    const base = fs.readFileSync(DOCKERFILE_BASE, "utf-8");
-    const sandbox = fs.readFileSync(DOCKERFILE_SANDBOX, "utf-8");
+  it.each([
+    [
+      "base image",
+      DOCKERFILE_BASE,
+      "# Baseline health check.",
+      undefined,
+    ],
+    [
+      "test image",
+      DOCKERFILE_SANDBOX,
+      "# Test image: no long-running service",
+      "ENTRYPOINT",
+    ],
+  ])("keeps %s non-service probe runtime-only", (_label, imagePath, startMarker, endMarker) => {
+    const imageDefinition = fs.readFileSync(imagePath, "utf-8");
+    const command = dockerHealthCommandBetween(imageDefinition, startMarker, endMarker);
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-runtime-probe-"));
 
-    expect(base).toContain("HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3");
-    expect(base).toContain('CMD node -e "process.exit(0)"');
-    expect(sandbox).toContain("HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3");
-    expect(sandbox).toContain('CMD node -e "process.exit(0)"');
+    try {
+      const probe = runLoggedDockerShell(command, tmp, [
+        'curl() { printf "%s\\n" "$*" >> "$call_log"; return 42; }',
+      ]);
+
+      expect(probe.result.status).toBe(0);
+      expect(probe.calls).toBe("");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 
