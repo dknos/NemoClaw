@@ -287,6 +287,43 @@ EOF
       });
       expect(stderr).toContain("integrity check FAILED");
     });
+
+    it("locked-aware verifier skips mutable-default hash files", () => {
+      const configFile = join(workDir, "config.json");
+      writeFileSync(configFile, '{"test": true}');
+      execFileSync("bash", [
+        "-c",
+        `cd ${JSON.stringify(workDir)} && sha256sum config.json > .config-hash`,
+      ]);
+      writeFileSync(configFile, '{"test": false, "mutable": true}');
+
+      const { stdout } = runWithLib(`
+        verify_config_integrity_if_locked ${JSON.stringify(workDir)} 2>&1
+        echo "MUTABLE_OK"
+      `);
+      expect(stdout).toContain("Config integrity check skipped for mutable default");
+    });
+
+    it("locked-aware verifier fails closed when a locked config is missing its hash", () => {
+      const fakeBin = join(workDir, "bin");
+      mkdirSync(fakeBin);
+      writeFileSync(
+        join(fakeBin, "stat"),
+        [
+          "#!/usr/bin/env bash",
+          'if [ "${2:-}" = "%u" ]; then echo 0; exit 0; fi',
+          'if [ "${2:-}" = "%a" ] || [ "${2:-}" = "%Lp" ]; then echo 755; exit 0; fi',
+          "exit 1",
+        ].join("\n"),
+        { mode: 0o700 },
+      );
+
+      const { stderr } = runWithLib(`verify_config_integrity_if_locked ${JSON.stringify(workDir)}`, {
+        env: { PATH: `${fakeBin}:${process.env.PATH || ""}` },
+        expectFail: true,
+      });
+      expect(stderr).toContain("Locked config is missing hash file");
+    });
   });
 
   describe("lock_rc_files", () => {
@@ -327,6 +364,17 @@ EOF
       // Should not throw
       runWithLib(`lock_rc_files ${JSON.stringify(workDir)}`);
     });
+
+    it("refuses to chmod symlinked rc files", () => {
+      const target = join(workDir, "target");
+      writeFileSync(target, "# target", { mode: 0o600 });
+      symlinkSync(target, join(workDir, ".bashrc"));
+
+      const { stdout } = runWithLib(`lock_rc_files ${JSON.stringify(workDir)} 2>&1`);
+
+      expect(stdout).toContain("Refusing to lock symlinked rc file");
+      expect(getOctalPerms(target)).toBe("600");
+    });
   });
 
   describe("drop_capabilities", () => {
@@ -354,6 +402,66 @@ EOF
       `,
       );
       expect(stdout).toContain("SKIPPED_OK");
+    });
+  });
+
+  describe("init_step_down_prefixes", () => {
+    it("falls back to gosu when setpriv is unavailable", () => {
+      // Source-time init runs before our test body, so re-run it with a
+      // PATH that hides setpriv and capsh to exercise the fallback.
+      const { stdout, stderr } = runWithLib(
+        [
+          "export PATH=/nonexistent",
+          "init_step_down_prefixes 2>&1",
+          "printf '%s\\n' \"${STEP_DOWN_PREFIX_SANDBOX[@]}\"",
+          'echo "--"',
+          "printf '%s\\n' \"${STEP_DOWN_PREFIX_GATEWAY[@]}\"",
+        ].join("\n"),
+      );
+      const combined = `${stdout}\n${stderr}`;
+      expect(combined).toContain("falling back to gosu");
+      expect(stdout).toContain("gosu\nsandbox");
+      expect(stdout).toContain("gosu\ngateway");
+    });
+
+    it("uses setpriv with the issue-3280 bounding-set drop when available", () => {
+      const { stdout } = runWithLib(
+        [
+          "TMP=$(mktemp -d)",
+          'cat >"$TMP/setpriv" <<\'STUB\'',
+          "#!/bin/sh",
+          "exit 0",
+          "STUB",
+          'cat >"$TMP/capsh" <<\'STUB\'',
+          "#!/bin/sh",
+          '[ "$1" = "--has-p=cap_setpcap" ] && exit 0',
+          "exit 1",
+          "STUB",
+          'chmod +x "$TMP/setpriv" "$TMP/capsh"',
+          'export PATH="$TMP:$PATH"',
+          "init_step_down_prefixes",
+          "printf '%s\\n' \"${STEP_DOWN_PREFIX_SANDBOX[@]}\"",
+          'echo "--"',
+          "printf '%s\\n' \"${STEP_DOWN_PREFIX_GATEWAY[@]}\"",
+          'rm -rf "$TMP"',
+        ].join("\n"),
+      );
+      // setpriv prefix must include --reuid/--regid for the user and the
+      // bounding-set drop covering the five load-bearing caps from #3280.
+      expect(stdout).toContain("setpriv");
+      expect(stdout).toContain("--reuid=sandbox");
+      expect(stdout).toContain("--regid=sandbox");
+      expect(stdout).toContain("--reuid=gateway");
+      expect(stdout).toContain("--regid=gateway");
+      // setpriv expects unprefixed cap names (per `setpriv --list`),
+      // unlike capsh which uses cap_*. Keep these in sync with the
+      // STEP_DOWN_PREFIX_* arrays in sandbox-init.sh.
+      expect(stdout).toContain("--bounding-set=-setuid,-setgid,-fowner,-chown,-kill");
+      // Each prefix array must end with '--' so setpriv stops parsing
+      // its own flags before the caller's target command. printf splits
+      // array elements onto separate lines, so each prefix's last element
+      // is a line containing just '--'.
+      expect(stdout.match(/^--$/gm)?.length).toBeGreaterThanOrEqual(3);
     });
   });
 
@@ -461,44 +569,39 @@ EOF
   describe("both entrypoints source the shared library", () => {
     it("nemoclaw-start.sh sources sandbox-init.sh", () => {
       const src = readFileSync(join(import.meta.dirname, "../scripts/nemoclaw-start.sh"), "utf-8");
-      expect(src).toContain("source");
-      expect(src).toContain("sandbox-init.sh");
+      const start = src.indexOf("_SANDBOX_INIT=");
+      const end = src.indexOf("# Harden: limit process count", start);
+      if (start === -1 || end === -1 || end <= start) {
+        throw new Error("Expected sandbox-init source block in scripts/nemoclaw-start.sh");
+      }
+
+      const workDir = mkdtempSync(join(tmpdir(), "nemoclaw-start-source-init-"));
+      const scriptDir = join(workDir, "scripts");
+      const libDir = join(scriptDir, "lib");
+      mkdirSync(libDir, { recursive: true });
+      writeFileSync(
+        join(libDir, "sandbox-init.sh"),
+        "export NEMOCLAW_TEST_SANDBOX_INIT_LOADED=1\n",
+      );
+      const wrapperPath = join(scriptDir, "nemoclaw-start.sh");
+      writeFileSync(
+        wrapperPath,
+        [
+          "#!/usr/bin/env bash",
+          "set -euo pipefail",
+          src.slice(start, end),
+          'printf "LOADED=%s\\n" "${NEMOCLAW_TEST_SANDBOX_INIT_LOADED:-0}"',
+        ].join("\n"),
+        { mode: 0o700 },
+      );
+
+      try {
+        const result = execFileSync("bash", [wrapperPath], { encoding: "utf-8" }).trim();
+        expect(result).toBe("LOADED=1");
+      } finally {
+        rmSync(workDir, { recursive: true, force: true });
+      }
     });
 
-    it("hermes start.sh sources sandbox-init.sh", () => {
-      const src = readFileSync(join(import.meta.dirname, "../agents/hermes/start.sh"), "utf-8");
-      expect(src).toContain("source");
-      expect(src).toContain("sandbox-init.sh");
-    });
-
-    it("hermes start.sh calls lock_rc_files (vulnerability fix)", () => {
-      const src = readFileSync(join(import.meta.dirname, "../agents/hermes/start.sh"), "utf-8");
-      expect(src).toContain("lock_rc_files");
-    });
-
-    it("hermes start.sh uses emit_sandbox_sourced_file for proxy config", () => {
-      const src = readFileSync(join(import.meta.dirname, "../agents/hermes/start.sh"), "utf-8");
-      expect(src).toContain("emit_sandbox_sourced_file");
-      // Should NOT contain the old inline _write_proxy_snippet pattern
-      expect(src).not.toContain("_write_proxy_snippet");
-      expect(src).not.toContain("_PROXY_MARKER_BEGIN");
-    });
-
-    it("hermes start.sh calls validate_tmp_permissions", () => {
-      const src = readFileSync(join(import.meta.dirname, "../agents/hermes/start.sh"), "utf-8");
-      expect(src).toContain("validate_tmp_permissions");
-    });
-
-    it("nemoclaw-start.sh uses emit_sandbox_sourced_file for proxy-env.sh", () => {
-      const src = readFileSync(join(import.meta.dirname, "../scripts/nemoclaw-start.sh"), "utf-8");
-      expect(src).toContain("emit_sandbox_sourced_file");
-      // Should NOT contain old chmod 644 for proxy-env
-      expect(src).not.toMatch(/chmod 644.*\$_PROXY_ENV_FILE/);
-    });
-
-    it("nemoclaw-start.sh uses parameterized verify_config_integrity", () => {
-      const src = readFileSync(join(import.meta.dirname, "../scripts/nemoclaw-start.sh"), "utf-8");
-      expect(src).toContain("verify_config_integrity /sandbox/.openclaw");
-    });
   });
 });

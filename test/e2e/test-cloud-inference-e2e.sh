@@ -20,7 +20,7 @@
 #   NEMOCLAW_RECREATE_SANDBOX=1             — recreate if exists
 #   E2E_PHASE_5B_MAX_ATTEMPTS              — chat retries (default: 3)
 #   E2E_PHASE_5B_RETRY_SLEEP_SEC           — seconds between retries (default: 5)
-#   NEMOCLAW_CLOUD_EXPERIMENTAL_MODEL      — cloud model (default: moonshotai/kimi-k2.5)
+#   NEMOCLAW_CLOUD_EXPERIMENTAL_MODEL      — cloud model (default: nvidia/nemotron-3-super-120b-a12b)
 #
 # Usage:
 #   NEMOCLAW_NON_INTERACTIVE=1 NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1 \
@@ -83,11 +83,13 @@ unset _script_dir _candidate
 
 E2E_DIR="$(cd "$(dirname "$0")" && pwd)"
 SANDBOX_NAME="${NEMOCLAW_SANDBOX_NAME:-e2e-cloud-inference}"
-CLOUD_MODEL="${NEMOCLAW_CLOUD_EXPERIMENTAL_MODEL:-moonshotai/kimi-k2.5}"
+CLOUD_MODEL="${NEMOCLAW_CLOUD_EXPERIMENTAL_MODEL:-nvidia/nemotron-3-super-120b-a12b}"
 
 # Source shared teardown helper
 # shellcheck source=test/e2e/lib/sandbox-teardown.sh
 . "${E2E_DIR}/lib/sandbox-teardown.sh"
+# shellcheck source=test/e2e/lib/install-path-refresh.sh
+. "${E2E_DIR}/lib/install-path-refresh.sh"
 register_sandbox_for_teardown "$SANDBOX_NAME"
 
 # ══════════════════════════════════════════════════════════════════════
@@ -127,14 +129,11 @@ kill "$tail_pid" 2>/dev/null || true
 wait "$tail_pid" 2>/dev/null || true
 
 # Source shell profile
-if [ -f "$HOME/.bashrc" ]; then
-  # shellcheck source=/dev/null
-  source "$HOME/.bashrc" 2>/dev/null || true
-fi
+nemoclaw_refresh_install_env
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 # shellcheck source=/dev/null
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-[ -d "$HOME/.local/bin" ] && [[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && export PATH="$HOME/.local/bin:$PATH"
+nemoclaw_ensure_local_bin_on_path
 
 if [ "$install_exit" -ne 0 ]; then
   fail "install.sh failed (exit $install_exit)"

@@ -249,6 +249,13 @@ section "Phase 3: Verify installation artifacts"
 # and Node.js via nodesource. On the GH runner the shell may not have
 # picked up the new PATH entries yet.
 export PATH="/usr/local/bin:$PATH"
+if [ "${GITHUB_ACTIONS:-}" = "true" ] \
+  && [ "${GITHUB_REPOSITORY:-}" = "NVIDIA/NemoClaw" ] \
+  && [ "${GITHUB_REF:-}" = "refs/heads/fix/native-messaging-websocket" ] \
+  && [ -n "${NEMOCLAW_OPENSHELL_BIN:-}" ]; then
+  main_openshell_dir="$(dirname "$NEMOCLAW_OPENSHELL_BIN")"
+  export PATH="$main_openshell_dir:$PATH"
+fi
 hash -r 2>/dev/null || true
 
 # 3a: nemoclaw on PATH and --help works
@@ -442,10 +449,6 @@ fi
 info "[ROUTING] inference.local DNS + OpenShell proxy reachable from sandbox..."
 ssh_config="$(mktemp)"
 sandbox_response=""
-
-TIMEOUT_CMD=""
-command -v timeout >/dev/null 2>&1 && TIMEOUT_CMD="timeout"
-command -v gtimeout >/dev/null 2>&1 && TIMEOUT_CMD="gtimeout"
 
 if openshell sandbox ssh-config "$SANDBOX_NAME" >"$ssh_config" 2>/dev/null; then
   sandbox_response=$(run_with_timeout 90 ssh -F "$ssh_config" \

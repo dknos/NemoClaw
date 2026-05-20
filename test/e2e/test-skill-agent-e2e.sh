@@ -26,6 +26,8 @@
 #   NEMOCLAW_NON_INTERACTIVE=1 NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1 \
 #     NVIDIA_API_KEY=nvapi-... bash test/e2e/test-skill-agent-e2e.sh
 
+# ShellCheck cannot see EXIT trap invocations of cleanup helpers in this E2E script.
+# shellcheck disable=SC2317
 set -uo pipefail
 
 PASS=0
@@ -167,6 +169,7 @@ section "Phase 3: Agent verification (${MAX_ATTEMPTS} attempts, ${RETRY_SLEEP}s 
 attempt=1
 agent_ok=0
 last_fail=""
+last_agent_out=""
 
 while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
   info "Attempt ${attempt}/${MAX_ATTEMPTS}: running openclaw agent turn..."
@@ -181,6 +184,7 @@ while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
   )
   agent_rc=$?
   set -uo pipefail
+  last_agent_out="$agent_out"
 
   if [ "$agent_rc" -eq 0 ]; then
     pass "Agent returned ${VERIFY_PHRASE} (attempt ${attempt}/${MAX_ATTEMPTS})"
@@ -205,7 +209,7 @@ while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
     fi
   fi
 
-  last_fail="Agent verification failed (exit ${agent_rc}): ${agent_out:0:400}"
+  last_fail="Agent verification failed (exit ${agent_rc})"
 
   if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then break; fi
   info "Attempt ${attempt}/${MAX_ATTEMPTS} failed — sleeping ${RETRY_SLEEP}s before retry..."
@@ -214,6 +218,9 @@ while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
 done
 
 if [ "$agent_ok" -ne 1 ]; then
+  info "Last agent verification output (tail):"
+  printf '%s\n' "$last_agent_out" | tail -c 12000
+  printf '\n'
   fail "$last_fail"
   exit 1
 fi

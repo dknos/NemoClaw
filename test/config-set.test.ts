@@ -13,8 +13,13 @@ const {
   classifyNewKeyGate,
   setDotpath,
   validateUrlValue,
+  validateUrlValueWithDns,
+  rewriteConfigUrlsWithDnsPinning,
+  formatConfigValueForLogs,
   resolveAgentConfig,
-} = require("../dist/lib/sandbox-config");
+  buildRecomputeSandboxConfigHashScript,
+  selectDockerDriverSandboxContainer,
+} = require("../dist/lib/sandbox/config");
 
 type MutableScalar = string | number | boolean | null | undefined;
 type MutableValue = MutableScalar | MutableMap | MutableValue[];
@@ -37,6 +42,83 @@ describe("resolveAgentConfig", () => {
   it("includes configFile in configPath", () => {
     const target = resolveAgentConfig("any-sandbox");
     expect(target.configPath.endsWith(target.configFile)).toBe(true);
+  });
+});
+
+describe("buildRecomputeSandboxConfigHashScript", () => {
+  it("keeps OpenClaw on the mutable compatibility hash", () => {
+    const script = buildRecomputeSandboxConfigHashScript({
+      agentName: "openclaw",
+      configPath: "/sandbox/.openclaw/openclaw.json",
+      configDir: "/sandbox/.openclaw",
+      format: "json",
+      configFile: "openclaw.json",
+      sensitiveFiles: ["/sandbox/.openclaw/.config-hash"],
+    });
+
+    expect(script).toContain("cd '/sandbox/.openclaw'");
+    expect(script).toContain("sha256sum 'openclaw.json' > .config-hash");
+    expect(script).toContain("chown sandbox:sandbox .config-hash");
+    expect(script).toContain("chmod 660 .config-hash");
+  });
+
+  it("updates Hermes strict and compatibility hashes with the expected permissions", () => {
+    const script = buildRecomputeSandboxConfigHashScript({
+      agentName: "hermes",
+      configPath: "/sandbox/.hermes/config.yaml",
+      configDir: "/sandbox/.hermes",
+      format: "yaml",
+      configFile: "config.yaml",
+      sensitiveFiles: ["/sandbox/.hermes/.config-hash", "/sandbox/.hermes/.env"],
+    });
+
+    expect(script).toContain(
+      "strict_hash='/etc/nemoclaw/hermes.config-hash'",
+    );
+    expect(script).toContain('strict_tmp="${strict_hash}.tmp.$$"');
+    expect(script).toContain(
+      "compat_hash='/sandbox/.hermes/.config-hash'",
+    );
+    expect(script).toContain('compat_tmp="${compat_hash}.tmp.$$"');
+    expect(script).toContain('trap \'rm -f "$strict_tmp" "$compat_tmp"\' EXIT HUP INT TERM');
+    expect(script).toContain(
+      'sha256sum \'/sandbox/.hermes/config.yaml\' \'/sandbox/.hermes/.env\' > "$strict_tmp"',
+    );
+    expect(script).toContain('chown root:root "$strict_tmp"');
+    expect(script).toContain('chmod 444 "$strict_tmp"');
+    expect(script).toContain('mv -f "$strict_tmp" "$strict_hash"');
+    expect(script).toContain('cp "$strict_hash" "$compat_tmp"');
+    expect(script).toContain('chown sandbox:sandbox "$compat_tmp"');
+    expect(script).toContain('chmod 600 "$compat_tmp"');
+    expect(script).toContain('mv -f "$compat_tmp" "$compat_hash"');
+  });
+});
+
+describe("selectDockerDriverSandboxContainer", () => {
+  it("returns the exact Docker-driver sandbox container when present", () => {
+    const selected = selectDockerDriverSandboxContainer(
+      "demo",
+      "docker",
+      "openshell-demo\nopenshell-demo-helper\n",
+    );
+
+    expect(selected).toBe("openshell-demo");
+  });
+
+  it("falls back to the generated Docker-driver sandbox container prefix", () => {
+    const selected = selectDockerDriverSandboxContainer(
+      "demo",
+      "docker",
+      "openshell-other\nopenshell-demo-abc123\n",
+    );
+
+    expect(selected).toBe("openshell-demo-abc123");
+  });
+
+  it("does not select a container for legacy gateway sandboxes", () => {
+    expect(
+      selectDockerDriverSandboxContainer("demo", "kubernetes", "openshell-demo\n"),
+    ).toBeNull();
   });
 });
 
@@ -288,6 +370,154 @@ describe("config set helpers", () => {
 
     it("rejects IPv6 loopback", () => {
       expect(() => validateUrlValue("http://[::1]:8080")).toThrow(/private/i);
+    });
+
+    it("rejects localhost subdomains", () => {
+      expect(() => validateUrlValue("http://api.localhost:8080")).toThrow(/private/i);
+    });
+
+    it("rejects reserved hostname suffixes from the shared blocklist", () => {
+      expect(() => validateUrlValue("http://printer.local:8080")).toThrow(/private/i);
+      expect(() => validateUrlValue("http://my-vm.internal:8080")).toThrow(/private/i);
+    });
+
+    it("rejects additional reserved special-use ranges from the shared blocklist", () => {
+      expect(() => validateUrlValue("http://192.0.2.1:80")).toThrow(/private/i);
+      expect(() => validateUrlValue("http://240.0.0.1:80")).toThrow(/private/i);
+      expect(() => validateUrlValue("http://[64:ff9b::a00:1]:80")).toThrow(/private/i);
+      expect(() => validateUrlValue("http://[2001::1]:80")).toThrow(/private/i);
+      expect(() => validateUrlValue("http://[2002::1]:80")).toThrow(/private/i);
+    });
+  });
+
+  describe("formatConfigValueForLogs", () => {
+    it("redacts scalar strings and URLs in preview output", () => {
+      expect(formatConfigValueForLogs("super-secret-value")).toBe('"[REDACTED_STRING]"');
+      expect(formatConfigValueForLogs("https://user:pass@example.com/v1?token=secret#frag")).toBe(
+        '"[REDACTED_URL]"',
+      );
+    });
+
+    it("redacts nested credential fields and string leaves", () => {
+      const output = formatConfigValueForLogs({
+        endpoint: "https://user:pass@example.com/v1?token=secret#frag",
+        apiKey: "sk-secret",
+        nested: { model: "nemotron", temperature: 0.2 },
+      });
+      expect(output).toContain("[REDACTED_URL]");
+      expect(output).toContain("[REDACTED]");
+      expect(output).toContain("[REDACTED_STRING]");
+      expect(output).toContain("0.2");
+      expect(output).not.toContain("user:pass");
+      expect(output).not.toContain("token=secret");
+      expect(output).not.toContain("sk-secret");
+      expect(output).not.toContain("nemotron");
+    });
+  });
+
+  describe("validateUrlValueWithDns", () => {
+    it("rejects hostname resolving to private IPv4", async () => {
+      const lookup = async () => [{ address: "169.254.169.254", family: 4 }];
+      await expect(validateUrlValueWithDns("https://example.com/v1", lookup)).rejects.toThrow(
+        /private\/internal/i,
+      );
+    });
+
+    it("rejects hostname resolving to private IPv6", async () => {
+      const lookup = async () => [{ address: "fd00::1", family: 6 }];
+      await expect(validateUrlValueWithDns("https://example.com/v1", lookup)).rejects.toThrow(
+        /private\/internal/i,
+      );
+    });
+
+    it("rejects hostname when any resolved address is private", async () => {
+      const lookup = async () => [
+        { address: "93.184.216.34", family: 4 },
+        { address: "::ffff:127.0.0.1", family: 6 },
+      ];
+      await expect(validateUrlValueWithDns("https://example.com/v1", lookup)).rejects.toThrow(
+        /private\/internal/i,
+      );
+    });
+
+    it("allows hostname when all resolved addresses are public", async () => {
+      const lookup = async () => [
+        { address: "93.184.216.34", family: 4 },
+        { address: "2607:f8b0:4004:800::200e", family: 6 },
+      ];
+      await expect(validateUrlValueWithDns("https://example.com/v1", lookup)).resolves.toBe(
+        undefined,
+      );
+    });
+
+    it("allows public IPv4 literals without DNS lookup", async () => {
+      const lookup = async () => {
+        throw new Error("lookup should not run for IP literals");
+      };
+      await expect(validateUrlValueWithDns("https://93.184.216.34/v1", lookup)).resolves.toBe(
+        undefined,
+      );
+    });
+
+    it("allows public bracketed IPv6 literals without DNS lookup", async () => {
+      const lookup = async () => {
+        throw new Error("lookup should not run for IP literals");
+      };
+      await expect(
+        validateUrlValueWithDns("https://[2606:4700:4700::1111]/v1", lookup),
+      ).resolves.toBe(undefined);
+    });
+
+    it("fails closed when DNS lookup errors", async () => {
+      const lookup = async () => {
+        throw new Error("NXDOMAIN");
+      };
+      await expect(validateUrlValueWithDns("https://missing.example/v1", lookup)).rejects.toThrow(
+        /Cannot resolve hostname/i,
+      );
+    });
+
+    it("fails closed when DNS lookup returns no addresses", async () => {
+      const lookup = async () => [];
+      await expect(validateUrlValueWithDns("https://empty.example/v1", lookup)).rejects.toThrow(
+        /no addresses returned/i,
+      );
+    });
+  });
+
+  describe("rewriteConfigUrlsWithDnsPinning", () => {
+    it("pins HTTP hostname URLs to the validated DNS address", async () => {
+      const lookup = async () => [{ address: "93.184.216.34", family: 4 }];
+      await expect(rewriteConfigUrlsWithDnsPinning("http://example.com/v1", lookup)).resolves.toBe(
+        "http://93.184.216.34/v1",
+      );
+    });
+
+    it("preserves HTTPS hostnames after DNS validation", async () => {
+      const lookup = async () => [{ address: "93.184.216.34", family: 4 }];
+      await expect(rewriteConfigUrlsWithDnsPinning("https://example.com/v1", lookup)).resolves.toBe(
+        "https://example.com/v1",
+      );
+    });
+
+    it("recursively rewrites nested HTTP URLs and leaves non-URLs unchanged", async () => {
+      const lookup = async () => [{ address: "93.184.216.34", family: 4 }];
+      await expect(
+        rewriteConfigUrlsWithDnsPinning(
+          {
+            primary: "http://api.example.com/v1",
+            secure: "https://secure.example.com/v1",
+            label: "production",
+            fallbacks: ["http://backup.example.com/v2"],
+          },
+          lookup,
+        ),
+      ).resolves.toEqual({
+        primary: "http://93.184.216.34/v1",
+        secure: "https://secure.example.com/v1",
+        label: "production",
+        fallbacks: ["http://93.184.216.34/v2"],
+      });
     });
   });
 });
